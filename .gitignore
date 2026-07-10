@@ -34,6 +34,7 @@ next-booking-app/secrets/
 *.md
 .md
 .jpg
+*..jpg
 
 
 # Dependencies
