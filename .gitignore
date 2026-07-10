@@ -1,0 +1,132 @@
+# macOS
+
+.DS_Store
+
+# Logs
+
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Environment and credentials
+travelmate/
+next-booking-app/
+.env
+.env.*
+!.env.example
+service-account.json
+*-service-account.json
+*.pem
+*.key
+*.cert
+secrets/
+wanderos/secrets/
+travelmate/secrets/
+travelater/secrets/
+next-booking-app/secrets/
+*.txt
+
+*.mp4
+*.png
+*.webp
+
+# Dependencies
+
+node_modules/
+
+# Next.js / React / Vite build output
+
+.next/
+out/
+dist/
+build/
+.vite/
+
+# Testing / coverage
+
+coverage/
+.nyc_output/
+
+# Cache
+
+.cache/
+.parcel-cache/
+.turbo/
+eslintcache
+
+# Local temporary files
+
+tmp/
+temp/
+*.tmp
+
+# Uploads and generated local files
+
+uploads/
+public/uploads/
+generated/
+public/generated/
+
+# Large archives
+
+*.zip
+*.rar
+*.7z
+*.tar
+*.tar.gz
+
+# Local exploration screenshots/videos only at project root
+
+/image*.png
+/image copy*.png
+/*.jpg
+/*.jpeg
+/*.png
+/*.webp
+/*.gif
+/*.mp4
+/*.mov
+/*.webm
+/*.avi
+/*.m4v
+
+# Editor / IDE
+
+.vscode/settings.json
+.vscode/tasks.json
+.vscode/launch.json
+.idea/
+
+# TypeScript
+
+*.tsbuildinfo
+
+# Package manager
+
+.pnpm-store/
+
+# Database local files
+
+*.sqlite
+*.sqlite3
+*.db
+
+# Python optional
+
+**pycache**/
+*.py[cod]
+.venv/
+venv/
+
+# Keep useful project files
+
+README.md
+!docs/
+docs/**
+.env.example
+
+# Images/videos stay OUT of GitHub (kept local). Serve UI media from Cloudinary URLs on the
+# deployed site instead of committing it. The global *.png/*.webp/*.mp4 ignores already cover
+# wanderos/public media — nothing extra needed here.
