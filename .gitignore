@@ -31,6 +31,10 @@ next-booking-app/secrets/
 *.mp4
 *.png
 *.webp
+*.md
+.md
+.jpg
+
 
 # Dependencies
 

@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "WanderOS Travel Intelligence",
+  "description": "Capture travel pages and run WanderOS multi-agent travel intelligence.",
+  "version": "0.1.0",
+  "permissions": ["activeTab", "scripting", "storage"],
+  "host_permissions": ["http://localhost:5050/*", "https://*.vercel.app/*", "https://*/*", "http://*/*"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "WanderOS",
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://*/*", "http://*/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
