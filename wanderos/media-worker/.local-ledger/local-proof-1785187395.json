@@ -1,0 +1,81 @@
+{
+  "doc": {
+    "raw_sha256": "22877a2972b2cc3f26b89d665977b91696f97478a0ee3753a963a6d68e5a9a8f",
+    "manifest": {
+      "canonical_hash": "b3dc2cc38d9960b5d3a2f473087ef6f2d5f41f1d95b10e087b7b9ab17addd141",
+      "encryption_scheme": null,
+      "manifest_uri": null,
+      "run": {
+        "completed_at": "2026-07-27T21:23:15.407564Z",
+        "created_at": "2026-07-27T21:23:15.407539Z",
+        "idempotency_key": null,
+        "metadata": {},
+        "name": "film-run",
+        "parent_run_id": null,
+        "project_id": null,
+        "run_id": "965c025b-c6bf-4534-91e9-0f83ee4445c3",
+        "started_at": "2026-07-27T21:23:15.406574Z",
+        "status": "completed",
+        "steps": [
+          {
+            "assets": [
+              {
+                "asset_id": "a1",
+                "audio": null,
+                "duration": null,
+                "height": null,
+                "media_type": "video/mp4",
+                "metadata": {},
+                "sha256": "724c06ea58f759e200a6c1c006e9359f4afd51deb6fad7b8fc40194dfd445d1a",
+                "size_bytes": 12,
+                "tracks": null,
+                "url": "mock://x.mp4",
+                "video": null,
+                "width": null
+              }
+            ],
+            "completed_at": "2026-07-27T21:23:15.407503Z",
+            "cost_usd": null,
+            "error": null,
+            "error_code": null,
+            "inputs": [],
+            "metadata": {
+              "upstream_id": "sync"
+            },
+            "modality": "video",
+            "model": "mock-kling",
+            "model_hash": null,
+            "model_version": null,
+            "negative_prompt": null,
+            "params": {},
+            "prompt": "x",
+            "prompt_visibility": "public",
+            "provider": "mv",
+            "provider_payload": {},
+            "retries": 0,
+            "run_id": "965c025b-c6bf-4534-91e9-0f83ee4445c3",
+            "seed": null,
+            "started_at": "2026-07-27T21:23:15.407368Z",
+            "status": "succeeded",
+            "step_id": "713045f8-7efc-46a3-b00d-29c938d436a8",
+            "step_index": 0,
+            "step_type": "generate"
+          }
+        ],
+        "tenant_id": null
+      },
+      "schema_version": "1.5",
+      "signature": null,
+      "transfer_failures": []
+    },
+    "job_id": "local-proof",
+    "scenes": 3,
+    "synthetic_scenes": [
+      2
+    ],
+    "sealed_at": "2026-07-27T21:23:15Z"
+  },
+  "signature": "ed1bae033100a4e4cb52e55f7a335d56e7e5ea1286954fa62e194444ef19d94b6c1fb59066433ed61fa0a1c651d82de3e8a32e70524a8908a8ffd010192bac05",
+  "sealed_sha256": "a801845ccd197171cbca1891e578bf910716ac1d4b41c3724290b42d2d6baac2",
+  "sealed_path": "/var/folders/q4/br2jv2310jn47gh5hlyy3_zw0000gn/T/film-js1np2ft/film.sealed.mp4"
+}
