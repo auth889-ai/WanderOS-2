@@ -6,6 +6,7 @@ import { tripPlanHandler } from "./handlers/tripPlan";
 import { videoHandler } from "./handlers/video";
 import { memoryBuildHandler } from "./handlers/memoryBuild";
 import { jarMovieHandler } from "./handlers/jarMovie";
+import { memoryAutopilotHandler } from "./handlers/memoryAutopilot";
 
 /**
  * Maps each job type → its crew handler. Each handler is a thin adapter that runs a crew and reports
@@ -22,5 +23,6 @@ export const JOB_HANDLERS: Partial<Record<JobType, JobHandler>> = {
   trip_plan: tripPlanHandler,
   social_post: socialPostHandler,
   memory_build: memoryBuildHandler,
-  jar_movie: jarMovieHandler
+  jar_movie: jarMovieHandler,
+  memory_autopilot: memoryAutopilotHandler
 };

@@ -132,6 +132,27 @@ README.md
 docs/**
 .env.example
 
+
+last/
+
+   
 # Images/videos stay OUT of GitHub (kept local). Serve UI media from Cloudinary URLs on the
 # deployed site instead of committing it. The global *.png/*.webp/*.mp4 ignores already cover
 # wanderos/public media — nothing extra needed here.
+
+notes/
+docs/
+next-booking-app/
+
+screens/
+
+
+# hackathon media worker
+wanderos/media-worker/.venv/
+wanderos/media-worker/scratch/
+wanderos/media-worker/.env
+
+# reference clones (not ours to commit)
+genblaze-gmicloud-pipeline/
+hackathon-refs/
+wanderos/media-worker/.cache/

@@ -59,6 +59,8 @@
     "test:e2e:dashboard": "tsx tests/e2e/host-dashboard.test.ts"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1095.0",
+    "@aws-sdk/s3-request-presigner": "^3.1095.0",
     "@fal-ai/client": "^1.10.1",
     "@google/genai": "^2.10.0",
     "@langchain/core": "^1.1.40",

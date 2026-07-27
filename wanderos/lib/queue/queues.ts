@@ -9,7 +9,8 @@ export const QUEUE_NAMES: Record<JobType, string> = {
   trip_plan: "trip_plan",
   social_post: "social_post",
   memory_build: "memory_build",
-  jar_movie: "jar_movie"
+  jar_movie: "jar_movie",
+  memory_autopilot: "memory_autopilot"
 };
 
 const queues = new Map<string, Queue>();

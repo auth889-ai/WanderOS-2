@@ -5,7 +5,14 @@ import { queryAurora } from "../pool";
  * (the studio, listing-video, and trip-planner crews). BullMQ/Redis schedules the work; this row is the
  * source of truth the UI reads (via SSE) for progress/status, and what survives a worker restart.
  */
-export type JobType = "studio" | "listing_video" | "trip_plan" | "social_post" | "memory_build" | "jar_movie";
+export type JobType =
+  | "studio"
+  | "listing_video"
+  | "trip_plan"
+  | "social_post"
+  | "memory_build"
+  | "jar_movie"
+  | "memory_autopilot";
 export type JobStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
 
 export type AgentJobRow = {
