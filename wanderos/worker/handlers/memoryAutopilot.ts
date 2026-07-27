@@ -48,25 +48,26 @@ export const memoryAutopilotHandler: JobHandler = async (ctx) => {
     15
   );
 
-  // Stage 2 — understanding: EXIF + vision timeline (the LangGraph graph attaches here next)
-  await updateMemoryJob(memoryJobId, { status: "understanding" });
-  await appendProgress(memoryJobId, { event: "stage.started", stage: "understanding" }, "understanding", 25);
-  await ctx.reportProgress(25, "Understanding your trip");
-
-  // Stage 3 — planning: story planner (graph node lands next build step)
-  await updateMemoryJob(memoryJobId, { status: "planning" });
-  await appendProgress(memoryJobId, { event: "stage.started", stage: "planning" }, "planning", 45);
-  await ctx.reportProgress(45, "Planning the story");
-
-  // Pause for the human — storyboard checkpoint (interrupt() takes over when the graph lands)
-  await updateMemoryJob(memoryJobId, { status: "awaiting_storyboard_approval" });
-  await appendProgress(
-    memoryJobId,
-    { event: "checkpoint.reached", checkpoint: "storyboard" },
-    "awaiting_storyboard_approval",
-    50
+  // Run the LangGraph brain up to the durable storyboard checkpoint.
+  // thread_id = memoryJobId → the pause survives restarts (Postgres checkpointer).
+  const { buildAutopilotGraph, getCheckpointer } = await import("@/lib/agents/crews/memory-autopilot/graph");
+  const graph = buildAutopilotGraph(await getCheckpointer());
+  await ctx.reportProgress(20, "Agent understanding your trip");
+  await graph.invoke(
+    {
+      jobId: memoryJobId,
+      requestText: job.request_text,
+      assetKeys: job.asset_keys,
+      inferred: null,
+      timeline: null,
+      gaps: [],
+      storyboard: null,
+      approval: null
+    },
+    { configurable: { thread_id: memoryJobId }, recursionLimit: 25 }
   );
-  await ctx.reportProgress(50, "Waiting for your storyboard approval");
-
+  // invoke() returns when the graph hits interrupt() — job row is already at
+  // awaiting_storyboard_approval with the storyboard persisted.
+  await ctx.reportProgress(65, "Waiting for your storyboard approval");
   return { memoryJobId, engineOk, assets: job.asset_keys.length, pausedAt: "storyboard" };
 };

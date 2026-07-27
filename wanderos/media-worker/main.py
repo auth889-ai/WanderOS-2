@@ -93,3 +93,15 @@ async def analyze_timeline(req: TimelineReq):
     from app.repo.timeline import analyze_photos
 
     return await analyze_photos(req.photos)
+
+
+class GapsReq(BaseModel):
+    timeline: dict
+    destination: str | None = None
+
+
+@app.post("/analyze/gaps")
+def analyze_gaps(req: GapsReq):
+    from app.repo.gaps import detect_gaps
+
+    return {"gaps": detect_gaps(req.timeline, req.destination)}
