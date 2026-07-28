@@ -105,3 +105,51 @@ def analyze_gaps(req: GapsReq):
     from app.repo.gaps import detect_gaps
 
     return {"gaps": detect_gaps(req.timeline, req.destination)}
+
+
+# ── Render jobs (P5/P6): generation engine + critic loop + compose + seal ──
+
+class RenderReq(BaseModel):
+    job_id: str
+    trip_id: str
+    storyboard: dict  # approved Storyboard (schema.ts shape)
+    consents: dict[str, bool] = {}  # {"<scene idx>": true} for synthetic scenes
+
+
+@app.post("/jobs/render")
+def create_render(req: RenderReq):
+    from app.repo.render_job import get_job, start_render
+
+    existing = get_job(req.job_id)
+    if existing and existing["status"] not in ("failed",):
+        return existing  # idempotent: re-POST returns the live job, never double-renders
+    return start_render(req.job_id, req.trip_id, req.storyboard, req.consents)
+
+
+@app.get("/jobs/{job_id}")
+def job_status(job_id: str):
+    from fastapi import HTTPException
+
+    from app.repo.render_job import get_job
+
+    job = get_job(job_id)
+    if job is None:
+        raise HTTPException(404, "unknown render job")
+    return job
+
+
+@app.get("/jobs/{job_id}/verify")
+def job_verify(job_id: str):
+    """The three independent checks against the sealed film — the /verify beat."""
+    from pathlib import Path
+
+    from fastapi import HTTPException
+
+    from app.repo.render_job import get_job
+    from app.repo.sealing import verify_film
+
+    job = get_job(job_id)
+    if not job or "publish_record" not in job:
+        raise HTTPException(404, "no sealed film for this job")
+    record = job["publish_record"]
+    return verify_film(Path(record["sealed_path"]), record)

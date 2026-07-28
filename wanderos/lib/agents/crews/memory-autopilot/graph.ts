@@ -29,7 +29,9 @@ const State = Annotation.Root({
   timeline: Annotation<unknown>(),
   gaps: Annotation<GapProposal[]>(),
   storyboard: Annotation<Storyboard | null>(),
-  approval: Annotation<AutopilotState["approval"]>()
+  approval: Annotation<AutopilotState["approval"]>(),
+  renderJob: Annotation<Record<string, unknown> | null>(),
+  finalApproval: Annotation<{ decision: string } | null>()
 });
 
 async function progress(jobId: string, event: string, stage: string, pct: number, extra: object = {}) {
@@ -160,6 +162,73 @@ async function storyboardApproval(state: typeof State.State) {
   return { approval };
 }
 
+// ── Node 6: generation — hand the approved storyboard to the media-worker
+// render engine (per-scene AgentLoop + Claude critic + compose + seal) and
+// poll its durable job state until delivered/failed.
+async function generateFilm(state: typeof State.State) {
+  await updateMemoryJob(state.jobId, { status: "generating" });
+  await progress(state.jobId, "agent.generate.started", "generating", 70);
+  const consents = state.approval?.consents ?? {};
+  const res = await fetch(`${MEDIA_WORKER_URL}/jobs/render`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      job_id: state.jobId,
+      trip_id: state.jobId,
+      storyboard: state.storyboard,
+      consents
+    }),
+    signal: AbortSignal.timeout(30_000)
+  });
+  if (!res.ok) throw new Error(`render engine ${res.status}`);
+
+  // Poll the durable job (survives worker restarts — state mirrored to B2).
+  let job: Record<string, unknown> = await res.json();
+  const deadline = Date.now() + 30 * 60_000;
+  while (Date.now() < deadline) {
+    const poll = await fetch(`${MEDIA_WORKER_URL}/jobs/${state.jobId}`, {
+      signal: AbortSignal.timeout(15_000)
+    });
+    if (poll.ok) {
+      job = await poll.json();
+      if (job.status === "delivered" || job.status === "failed") break;
+      await progress(state.jobId, "agent.generate.progress", "generating", 80, {
+        engineStatus: job.status
+      });
+    }
+    await new Promise((r) => setTimeout(r, 3000));
+  }
+  if (job.status !== "delivered") {
+    throw new Error(`render job ended: ${job.status} ${job.error ?? ""}`);
+  }
+  await progress(state.jobId, "agent.generate.done", "generating", 88, {
+    stored: job.stored,
+    verified: (job.verification as { verified?: boolean } | undefined)?.verified
+  });
+  return { renderJob: job };
+}
+
+// ── Node 7: final approval — the second DURABLE human checkpoint
+async function finalApproval(state: typeof State.State) {
+  await updateMemoryJob(state.jobId, { status: "awaiting_final_approval" });
+  await progress(state.jobId, "checkpoint.final", "awaiting_final_approval", 92, {
+    film: state.renderJob?.delivery_key ?? state.renderJob?.film
+  });
+  const approval = interrupt({ checkpoint: "final", renderJob: state.renderJob });
+  return { finalApproval: approval };
+}
+
+// ── Node 8: deliver — mark the job done; the sealed film + passport already
+// live in B2 (delivery/ + provenance manifests with Object Lock).
+async function deliver(state: typeof State.State) {
+  await updateMemoryJob(state.jobId, { status: "delivered" });
+  await progress(state.jobId, "agent.deliver.done", "delivered", 100, {
+    delivery: state.renderJob?.delivery_key,
+    stored: state.renderJob?.stored
+  });
+  return {};
+}
+
 export function buildAutopilotGraph(checkpointer?: PostgresSaver | MemorySaver) {
   const graph = new StateGraph(State)
     .addNode("intake", intake)
@@ -167,12 +236,18 @@ export function buildAutopilotGraph(checkpointer?: PostgresSaver | MemorySaver) 
     .addNode("detect_gaps", detectGaps)
     .addNode("plan_story", planStory)
     .addNode("storyboard_approval", storyboardApproval)
+    .addNode("generate_film", generateFilm)
+    .addNode("final_approval", finalApproval)
+    .addNode("deliver", deliver)
     .addEdge("__start__", "intake")
     .addEdge("intake", "understand")
     .addEdge("understand", "detect_gaps")
     .addEdge("detect_gaps", "plan_story")
     .addEdge("plan_story", "storyboard_approval")
-    .addEdge("storyboard_approval", "__end__"); // P5 generation attaches here next
+    .addEdge("storyboard_approval", "generate_film")
+    .addEdge("generate_film", "final_approval")
+    .addEdge("final_approval", "deliver")
+    .addEdge("deliver", "__end__");
   return graph.compile({ checkpointer: checkpointer ?? new MemorySaver() });
 }
 

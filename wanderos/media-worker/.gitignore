@@ -1,1 +1,24 @@
-keys/signing.key
+# Secrets
+.env
+.env.*
+!.env.example
+keys/*.key
+*.pem
+*.p12
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+
+# Runtime artifacts
+.cache/
+.local-ledger/
+tmp/
+outputs/
+*.log
+
+# OS
+.DS_Store
+__MACOSX/

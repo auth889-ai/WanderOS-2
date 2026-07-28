@@ -30,6 +30,12 @@ class Settings(BaseSettings):
     elevenlabs_api_key: str = ""
     nvidia_api_key: str = ""
 
+    # Claude critic (Experience Director's quality gate)
+    anthropic_api_key: str = ""
+    critic_model: str = "claude-opus-5"
+    critic_threshold: float = 0.85
+    max_scene_attempts: int = 3
+
     # Pipeline behavior
     pipeline_tier: str = "mock"  # mock | dev | final
     step_cache_dir: str = str(ROOT / ".cache" / "genblaze")

@@ -90,3 +90,8 @@ def drain_local_events(job_id: str) -> list[str]:
     """Test/polling helper — returns and clears buffered events for a job."""
     buf = _local_buffer.pop(job_id, None)
     return list(buf) if buf else []
+
+
+def emit_job_event(job_id: str, event: str, payload: dict | None = None) -> None:
+    """Engine-level (non-Tracer) events: scene attempts, critic verdicts, sealing."""
+    SSETracer(job_id)._emit(event, payload or {})
