@@ -101,3 +101,35 @@ Official sample flows:
 
 Note on AWS credits: storage must stay on B2 (judged criterion); AWS credits are fine for
 hosting/compute only.
+
+## Pitch: problem, billion-dollar path, winning position
+
+Problem: post-trip evidence (300+ photos, booking PDFs, voice notes) is never assembled;
+existing tools make dumb slideshows. 2026 twist: generative media is untrustworthy.
+Travel Autopilot = verified memory film — every frame traces via manifest chain to real
+evidence, sealed in B2 Object Lock. Audiences: travelers, creators (provable authenticity),
+claims/visa evidence timelines, tour operators.
+
+Billion-dollar path (ExperienceOS): films are the wedge; every processed trip yields
+structured verified experience data -> Experience Graph (proprietary dataset) ->
+platform layer (verified recommendations, creator marketplaces, claims automation,
+proof-of-experience APIs). Travel = $1.9T industry with no verified experience data layer.
+"The pipeline is becoming the moat" (Backblaze's own framing).
+
+Winning position vs 1,145 participants: the two highest-leverage unclaimed gaps are
+AgentLoop (nobody uses it, not even official samples) and B2 Object Lock (no competitor).
+Claim both, match cinemory's production polish (deployed URL, SSE, tests, approval gate),
+tell the stronger multi-modal real-evidence story.
+
+Architecture (repo reality + 48h additions):
+intake UI -> B2 originals -> LangGraph brain (intake/timeline/gaps/planner + durable
+storyboard interrupt) -> Genblaze layer in single pipelines.py (per-scene fan-out
+max_concurrency=3, GMI Cloud primary + fallback chain on MODEL_ERROR, AgentLoop per scene
+with vision judge EvaluationResult(passed,score,feedback) max_iterations=3, StepCache)
+-> film composer (Pillow overlay) -> 7-step sealing (canonical Manifest, Mp4Handler embed,
+manifest.verify(), B2 Object Lock) -> Experience Graph API over ParquetSink/JSONL history
+-> public Verify page showing lineage graph.
+
+Submission mechanics: working app URL (host on AWS credits; storage stays B2), ~3-min demo,
+providers/models list, B2+Genblaze explanation, star genblaze repo, file one thoughtful
+Genblaze issue (feeds 10-team mentorship feedback prize).
