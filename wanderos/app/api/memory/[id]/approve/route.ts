@@ -68,14 +68,20 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   await updateMemoryJob(job.id, { status: "generating" });
   await appendProgress(job.id, { event: "checkpoint.approved", consents }, "generating", 70);
 
-  // Resume the paused graph on its durable thread. P5's generation nodes take over from here;
-  // until they land, the graph completes at the checkpoint edge.
+  // Resume the paused graph on its durable thread. generate_film polls the render
+  // engine for up to 30 min, so the resume runs detached — progress reaches the UI
+  // via the SSE stream, and the engine's own state survives in B2 regardless.
   const { buildAutopilotGraph, getCheckpointer } = await import("@/lib/agents/crews/memory-autopilot/graph");
   const graph = buildAutopilotGraph(await getCheckpointer());
-  await graph.invoke(new Command({ resume: { decision, consents } }), {
-    configurable: { thread_id: job.id },
-    recursionLimit: 25
-  });
+  void graph
+    .invoke(new Command({ resume: { decision, consents } }), {
+      configurable: { thread_id: job.id },
+      recursionLimit: 25
+    })
+    .catch(async (e) => {
+      await updateMemoryJob(job.id, { status: "failed", error: String(e).slice(0, 500) });
+      await appendProgress(job.id, { event: "agent.generate.failed", error: String(e).slice(0, 300) }, "failed", 75);
+    });
 
   return NextResponse.json({ status: "resumed", decision });
 }
