@@ -112,7 +112,7 @@ def _first_video_asset(result) -> str | None:
 
 
 def _generated_clip(job_id: str, trip_id: str, scene: dict, image_key: str | None,
-                    out: Path) -> tuple[Path, list[dict]]:
+                    out: Path) -> tuple[Path | None, list[dict]]:
     """hero_video / synthetic_scene path: AgentLoop(generate -> critique -> repair)."""
     idx = scene["idx"]
     seconds = int(scene.get("durationSec", 5))
@@ -175,6 +175,35 @@ def _generated_clip(job_id: str, trip_id: str, scene: dict, image_key: str | Non
     max_attempts = 1 if settings.pipeline_tier == "mock" else settings.max_scene_attempts
     loop_result = AgentLoop(factory, evaluator, max_iterations=max_attempts).run()
 
+    # NEVER auto-accept an exhausted loop. Shipping the last rejected attempt
+    # because we ran out of retries would contradict the whole trust thesis —
+    # the critic said this output is wrong, and delivering it anyway makes the
+    # critic theatre. The safe fallback is the traveller's OWN photo with free
+    # parallax motion: always real, always accurate, never a fabrication.
+    if not loop_result.passed:
+        worst = attempts[-1] if attempts else {}
+        emit_job_event(job_id, "scene.degraded.critic_exhausted", {
+            "scene": idx,
+            "attempts": len(attempts),
+            "last_score": worst.get("overall"),
+            "reason": (worst.get("violations") or ["critic never accepted an attempt"])[0],
+        })
+        real = _fetch_asset(scene.get("assetKey"), _work(job_id) / f"src_{idx:02d}.jpg") \
+            if scene.get("assetKey") else None
+        if real is not None:
+            _parallax_clip(real, out, seconds)
+        else:
+            # No real photo to fall back to (a purely synthetic scene). Drop the
+            # scene rather than ship something the critic rejected.
+            _record(trip_id, f"evaluations/{job_id}/scene-{idx}-verdicts.jsonl",
+                    {"jsonl": "\n".join(json.dumps(a, default=str) for a in attempts)})
+            return None, attempts
+        for a in attempts:
+            a["degraded"] = True
+        _record(trip_id, f"evaluations/{job_id}/scene-{idx}-verdicts.jsonl",
+                {"jsonl": "\n".join(json.dumps(a, default=str) for a in attempts)})
+        return out, attempts
+
     final = loop_result.final
     url = _first_video_asset(final)
     media = _fetch_asset(url, out) if url else None
@@ -183,7 +212,7 @@ def _generated_clip(job_id: str, trip_id: str, scene: dict, image_key: str | Non
         # the real generated still + the free ffmpeg parallax move — a genuine
         # scene, not a placeholder. Placeholder only if there is no image either.
         image_url = _first_asset(final, "image")
-        still = _fetch_asset(image_url, work_still := _work(job_id) / f"gen_{idx:02d}.png") if image_url else None
+        still = _fetch_asset(image_url, _work(job_id) / f"gen_{idx:02d}.png") if image_url else None
         if still is not None:
             emit_job_event(job_id, "scene.degraded.parallax",
                            {"scene": idx, "reason": "no video model available; animating generated still"})
@@ -221,8 +250,19 @@ def render_scene(job_id: str, trip_id: str, scene: dict,
     else:  # gen_image / hero_video / synthetic_scene — real generation + critic loop
         out, attempts = _generated_clip(job_id, trip_id, scene,
                                         scene.get("assetKey"), out)
+        if out is None:
+            # Critic never accepted and there was no real photo to fall back to.
+            # Dropping the scene is the honest outcome — the film is shorter, but
+            # it contains nothing the critic judged wrong.
+            emit_job_event(job_id, "scene.dropped",
+                           {"scene": idx, "reason": "critic rejected every attempt"})
+            return {"idx": idx, "clip": None, "synthetic": True,
+                    "attempts": attempts, "skipped": True, "dropped": True}
 
+    degraded = any(a.get("degraded") for a in attempts)
     emit_job_event(job_id, "scene.completed",
-                   {"scene": idx, "source": source, "attempts": len(attempts)})
+                   {"scene": idx, "source": source, "attempts": len(attempts),
+                    "degraded": degraded})
     return {"idx": idx, "clip": out, "synthetic": source == "synthetic_scene",
+            "degraded": degraded,
             "attempts": attempts, "skipped": False}
