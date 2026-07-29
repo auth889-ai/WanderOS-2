@@ -21,7 +21,7 @@ from genblaze import (
 from genblaze_s3 import S3StorageBackend
 
 from app.config.settings import settings
-from app.repo.provider_catalog import image_provider, models, tts_provider, video_provider
+from app.media.provider_catalog import image_provider, models, tts_provider, video_provider
 from app.runtime.events import SSETracer
 
 

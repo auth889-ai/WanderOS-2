@@ -118,7 +118,7 @@ assets = (
 
 # ── Evidence ─────────────────────────────────────────────────────────────────
 step("Extract evidence from all three source types")
-from app.repo.evidence import extract_all  # noqa: E402
+from app.evidence.extractors import extract_all  # noqa: E402
 
 bundle = extract_all(assets, job_id="e2e")
 for group in ("documents", "voice", "photos"):
@@ -134,7 +134,7 @@ print(f"  sources used: {bundle['sources_used']}")
 
 # ── Truth model ──────────────────────────────────────────────────────────────
 step("Classify every claim by what the evidence actually proves")
-from app.repo.truth import apply_consent, classify, consent_questions, may_generate  # noqa: E402
+from app.evidence.truth import apply_consent, classify, consent_questions, may_generate  # noqa: E402
 
 result = classify(bundle)
 print(f"  classifier: {result['classifier']}\n")
@@ -182,7 +182,7 @@ if confirmed:
         "durationSec": 4, "needsConsent": True,
     })
 
-from app.repo.render_job import get_job, start_render  # noqa: E402
+from app.jobs.render_job import get_job, start_render  # noqa: E402
 
 start_render("e2e-demo", "trip-e2e", storyboard, consents={"2": bool(confirmed)})
 job = {}
@@ -206,7 +206,7 @@ print(f"  retention : {job.get('publish_record', {}).get('retention', 'n/a')}")
 
 # ── Verify + tamper ──────────────────────────────────────────────────────────
 step("Verify the sealed film, then prove tampering is detected")
-from app.repo.sealing import verify_film  # noqa: E402
+from app.trust.sealing import verify_film  # noqa: E402
 
 record = job["publish_record"]
 sealed = Path(record["sealed_path"])

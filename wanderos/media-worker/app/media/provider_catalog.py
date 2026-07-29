@@ -23,7 +23,7 @@ import hashlib
 from genblaze import Asset, BaseProvider, MockAudioProvider, MockProvider, MockVideoProvider
 
 from app.config.settings import settings
-from app.repo.chain import ChainProvider, Link
+from app.media.chain import ChainProvider, Link
 
 
 def _mock_asset(kind: str):
@@ -45,7 +45,7 @@ def _mock_asset(kind: str):
 
 
 def _aws_ready() -> bool:
-    from app.repo.providers_aws import aws_configured
+    from app.media.providers_aws import aws_configured
 
     return aws_configured()
 
@@ -55,7 +55,7 @@ def _aws_ready() -> bool:
 def _image_links() -> list[Link]:
     links: list[Link] = []
     if _aws_ready():
-        from app.repo.providers_aws import BedrockImageProvider
+        from app.media.providers_aws import BedrockImageProvider
 
         model = ("stability.sd3-5-large-v1:0" if settings.pipeline_tier == "final"
                  else "stability.stable-image-core-v1:1")
@@ -96,7 +96,7 @@ def _audio_links() -> list[Link]:
         links.append(Link("elevenlabs",
                           ElevenLabsTTSProvider(api_key=settings.elevenlabs_api_key), "eleven_v3"))
     if _aws_ready():
-        from app.repo.providers_aws import PollyTTSProvider
+        from app.media.providers_aws import PollyTTSProvider
 
         links.append(Link("aws-polly", PollyTTSProvider(), settings.polly_voice))
     if settings.openai_api_key:

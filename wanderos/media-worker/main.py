@@ -13,7 +13,7 @@ from fastapi import FastAPI
 from pydantic import BaseModel, Field
 
 from app.config.settings import settings
-from app.repo import pipelines
+from app.media import pipelines
 from app.runtime.events import drain_local_events
 
 app = FastAPI(title="wanderos-media-worker", version="0.1.0")
@@ -59,8 +59,8 @@ def _summarize(result) -> dict:
 @app.get("/health")
 def health():
     """Judge-facing capability report — every claim on this page is probed live."""
-    from app.repo.claude import describe as claude_route
-    from app.repo.provider_catalog import chain_summary
+    from app.reasoning.claude import describe as claude_route
+    from app.media.provider_catalog import chain_summary
 
     return {
         "ok": True,
@@ -86,8 +86,8 @@ def evidence_classify(req: EvidenceReq):
     Returns the consent questions the traveler must answer before any moment they
     did not photograph can be recreated.
     """
-    from app.repo.evidence import extract_all
-    from app.repo.truth import classify, consent_questions
+    from app.evidence.extractors import extract_all
+    from app.evidence.truth import classify, consent_questions
 
     bundle = extract_all(req.assets, job_id=req.job_id)
     result = classify(bundle, req.timeline)
@@ -108,7 +108,7 @@ class ConsentReq(BaseModel):
 @app.post("/evidence/consent")
 def evidence_consent(req: ConsentReq):
     """Fold the traveler's answers in and report what may now be generated."""
-    from app.repo.truth import apply_consent, disclosure_required, may_generate
+    from app.evidence.truth import apply_consent, disclosure_required, may_generate
 
     claims = apply_consent(req.claims, req.decisions)
     return {
@@ -147,7 +147,7 @@ class TimelineReq(BaseModel):
 
 @app.post("/analyze/timeline")
 async def analyze_timeline(req: TimelineReq):
-    from app.repo.timeline import analyze_photos
+    from app.evidence.timeline import analyze_photos
 
     return await analyze_photos(req.photos)
 
@@ -159,7 +159,7 @@ class GapsReq(BaseModel):
 
 @app.post("/analyze/gaps")
 def analyze_gaps(req: GapsReq):
-    from app.repo.gaps import detect_gaps
+    from app.evidence.gaps import detect_gaps
 
     return {"gaps": detect_gaps(req.timeline, req.destination)}
 
@@ -175,7 +175,7 @@ class RenderReq(BaseModel):
 
 @app.post("/jobs/render")
 def create_render(req: RenderReq):
-    from app.repo.render_job import get_job, start_render
+    from app.jobs.render_job import get_job, start_render
 
     existing = get_job(req.job_id)
     if existing and existing["status"] not in ("failed",):
@@ -187,7 +187,7 @@ def create_render(req: RenderReq):
 def job_status(job_id: str):
     from fastapi import HTTPException
 
-    from app.repo.render_job import get_job
+    from app.jobs.render_job import get_job
 
     job = get_job(job_id)
     if job is None:
@@ -202,8 +202,8 @@ def job_verify(job_id: str):
 
     from fastapi import HTTPException
 
-    from app.repo.render_job import get_job
-    from app.repo.sealing import verify_film
+    from app.jobs.render_job import get_job
+    from app.trust.sealing import verify_film
 
     job = get_job(job_id)
     if not job or "publish_record" not in job:

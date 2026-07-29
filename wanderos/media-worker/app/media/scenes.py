@@ -25,8 +25,8 @@ from pathlib import Path
 from genblaze import AgentLoop, ThresholdEvaluator
 
 from app.config.settings import settings
-from app.repo import pipelines
-from app.repo.critic import critique_scene
+from app.media import pipelines
+from app.reasoning.critic import critique_scene
 from app.runtime.events import emit_job_event
 
 

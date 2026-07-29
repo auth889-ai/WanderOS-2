@@ -20,10 +20,10 @@ from pathlib import Path
 from genblaze import Manifest
 
 from app.config.settings import settings
-from app.repo import pipelines
-from app.repo.compose import SceneClip, compose_film
-from app.repo.scenes import _fetch_asset, _work, render_scene
-from app.repo.sealing import seal_film, verify_film
+from app.media import pipelines
+from app.media.compose import SceneClip, compose_film
+from app.media.scenes import _fetch_asset, _work, render_scene
+from app.trust.sealing import seal_film, verify_film
 from app.runtime.events import emit_job_event
 
 JOBS: dict[str, dict] = {}
@@ -120,12 +120,46 @@ def _run(job: dict) -> None:
 
         delivery_key = _upload_delivery(trip_id, Path(record["sealed_path"]),
                                         f"{job_id}-film.sealed.mp4")
+
+        # Delivery Pack — reel, cover, journal and cost, all from assets we
+        # already paid for. No extra model spend.
+        _set(job, "packaging")
+        pack = _build_pack(job, Path(record["sealed_path"]), storyboard)
+
         _set(job, "delivered", film=str(record["sealed_path"]),
              delivery_key=delivery_key, verification=verification,
-             stored=record["stored"])
+             stored=record["stored"], pack=pack)
     except Exception as exc:
         _set(job, "failed", error=f"{type(exc).__name__}: {exc}",
              trace=traceback.format_exc()[-1500:])
+
+
+def _build_pack(job: dict, film: Path, storyboard: dict) -> dict:
+    """Reel + cover + journal + cost. Each piece degrades independently — a
+    failed reel must never cost the traveller their finished film."""
+    from app.delivery import pack as delivery
+
+    work = _work(job["job_id"])
+    artifacts: dict[str, Path] = {}
+    try:
+        artifacts["social-reel"] = delivery.build_social_reel(
+            film, work / "social-reel.mp4", title=storyboard.get("title", ""))
+    except Exception as exc:
+        emit_job_event(job["job_id"], "delivery.reel.failed", {"error": str(exc)[:200]})
+    try:
+        artifacts["cover"] = delivery.build_cover(film, work / "cover.jpg")
+    except Exception as exc:
+        emit_job_event(job["job_id"], "delivery.cover.failed", {"error": str(exc)[:200]})
+
+    scenes = job.get("scenes", [])
+    journal = delivery.build_journal(storyboard, job.get("claims", []) or [], scenes)
+    cost = delivery.estimate_cost(scenes)
+    published = delivery.publish(job["trip_id"], job["job_id"], artifacts, journal, cost)
+
+    emit_job_event(job["job_id"], "delivery.pack.ready", {
+        "outputs": list(published["keys"].keys()), "cost": cost["estimated_usd"]})
+    return {"keys": published["keys"], "journal": journal, "cost": cost,
+            "local": {k: str(v) for k, v in artifacts.items()}}
 
 
 def _experience_manifest(job: dict, film: Path) -> dict:
@@ -187,7 +221,7 @@ def _sha256_file(path: Path) -> str:
 
 def _chains() -> dict:
     try:
-        from app.repo.provider_catalog import chain_summary
+        from app.media.provider_catalog import chain_summary
 
         return chain_summary()
     except Exception:
@@ -199,7 +233,7 @@ def _seed_run(job_id: str):
     scene pipelines ran earlier (their own manifests are stored per attempt)."""
     from genblaze import Modality, Pipeline
 
-    from app.repo.provider_catalog import image_provider, models
+    from app.media.provider_catalog import image_provider, models
 
     result = Pipeline(f"compose-{job_id}", tenant_id=job_id, chain=True).step(
         image_provider(), model=models()["image"], modality=Modality.IMAGE,

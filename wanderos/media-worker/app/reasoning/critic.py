@@ -83,7 +83,7 @@ def _rubric_fallback(scene: dict, media: Path | None) -> dict:
 
 def critique_scene(scene: dict, media: Path | None, *, attempt: int = 1) -> dict:
     """Score one generated scene. `media` = local path of the clip (or image)."""
-    from app.repo.claude import ClaudeUnavailable, complete, describe, route
+    from app.reasoning.claude import ClaudeUnavailable, complete, describe, route
 
     if route() == "none":
         return _rubric_fallback(scene, media)

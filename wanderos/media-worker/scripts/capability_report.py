@@ -52,7 +52,7 @@ check("storage + Object Lock", "Backblaze B2", b2_probe)
 
 # ── Reasoning ──
 def claude_probe():
-    from app.repo.claude import describe, route
+    from app.reasoning.claude import describe, route
 
     if route() == "none":
         raise RuntimeError("no Claude route")

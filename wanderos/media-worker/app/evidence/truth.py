@@ -24,7 +24,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.repo.claude import ClaudeUnavailable, complete, describe
+from app.reasoning.claude import ClaudeUnavailable, complete, describe
 
 GENERATABLE = {"USER_CONFIRMED", "SYNTHETIC"}
 NEEDS_CONSENT = {"INFERRED", "CONTRADICTED"}
