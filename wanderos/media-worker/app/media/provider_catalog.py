@@ -85,6 +85,12 @@ def _video_links() -> list[Link]:
         provider = GMICloudVideoProvider(api_key=settings.gmi_api_key)
         links.append(Link("gmi-cloud", provider, "kling-image2video-v2.1-master"))
         links.append(Link("gmi-cloud", provider, "seedance-2-0-260128"))
+    # Luma is text-to-video only, so it is the last resort for a scene built
+    # from a real photo — but it runs on AWS credits and never needs GMI funding.
+    if _aws_ready() and settings.aws_staging_bucket:
+        from app.media.providers_aws import LumaRayVideoProvider
+
+        links.append(Link("aws-luma", LumaRayVideoProvider(), "luma.ray-v2:0"))
     return links
 
 
