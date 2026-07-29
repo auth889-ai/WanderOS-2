@@ -24,11 +24,12 @@ class Settings(BaseSettings):
     b2_bucket_intermediate: str = "wanderos-intermediate"
     b2_bucket_logs: str = "wanderos-logs"
 
-    # Providers
+    # Providers — each configured key becomes a live link in the failover chain
     gmi_api_key: str = ""
     gemini_api_key: str = ""
     elevenlabs_api_key: str = ""
     nvidia_api_key: str = ""
+    openai_api_key: str = ""
 
     # AWS — Bedrock (Stability image) + Polly (narration). Bedrock image runs in
     # us-west-2: the Stability text-to-image models are ACTIVE there, while Nova

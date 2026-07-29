@@ -1,11 +1,20 @@
 """THE only module importing genblaze provider classes (sponsor-sample convention).
 
+Every configured API key becomes a live rung in a cross-provider failover chain
+(app/repo/chain.py), so a dead vendor degrades the run instead of ending it:
+
+  image  AWS Bedrock (Stability)  ->  OpenAI DALL-E   ->  GMI Cloud (Seedream)
+  video  OpenAI Sora              ->  GMI Cloud (Kling) -> AWS Bedrock (Luma Ray)*
+  audio  ElevenLabs (final tier)  ->  AWS Polly       ->  OpenAI TTS -> GMI
+
+  * Luma Ray is ACTIVE on Bedrock us-west-2 but its async API writes to S3, so it
+    only joins the chain once the IAM user is granted S3 access. Nova Reel is
+    LEGACY in every region and refuses InvokeModel on cold accounts.
+
 Tiers:
   mock  — Mock providers, zero keys, zero cost (CI + local dev + seam tests)
-  dev   — cheapest real models (GMI credits) for iteration
+  dev   — cheapest real models for iteration
   final — premium models, demo renders only
-Model ids for dev/final re-verified against the GMI console before first real run;
-ModelRegistry absorbs any drift.
 """
 from __future__ import annotations
 
@@ -14,6 +23,7 @@ import hashlib
 from genblaze import Asset, BaseProvider, MockAudioProvider, MockProvider, MockVideoProvider
 
 from app.config.settings import settings
+from app.repo.chain import ChainProvider, Link
 
 
 def _mock_asset(kind: str):
@@ -34,83 +44,115 @@ def _mock_asset(kind: str):
     return make
 
 
-def image_provider() -> BaseProvider:
-    """AWS Bedrock (Stability) is primary; GMI Cloud is the fallback."""
-    if settings.pipeline_tier == "mock":
-        return MockProvider(name="mock-image", assets=_mock_asset("image"))
+def _aws_ready() -> bool:
+    from app.repo.providers_aws import aws_configured
 
-    from app.repo.providers_aws import BedrockImageProvider, aws_configured
+    return aws_configured()
 
-    if aws_configured():
-        return BedrockImageProvider()
+
+# --- Chain builders: one Link per configured credential, best first ---
+
+def _image_links() -> list[Link]:
+    links: list[Link] = []
+    if _aws_ready():
+        from app.repo.providers_aws import BedrockImageProvider
+
+        model = ("stability.sd3-5-large-v1:0" if settings.pipeline_tier == "final"
+                 else "stability.stable-image-core-v1:1")
+        links.append(Link("aws-bedrock", BedrockImageProvider(), model))
+    if settings.openai_api_key:
+        from genblaze_openai import DalleProvider
+
+        links.append(Link("openai-dalle", DalleProvider(api_key=settings.openai_api_key),
+                          "gpt-image-1"))
     if settings.gmi_api_key:
         from genblaze_gmicloud import GMICloudImageProvider
 
-        return GMICloudImageProvider(api_key=settings.gmi_api_key)
-    return MockProvider(name="mock-image", assets=_mock_asset("image"))
+        model = "seedream-5.0" if settings.pipeline_tier == "final" else "seedream-5.0-lite"
+        links.append(Link("gmi-cloud", GMICloudImageProvider(api_key=settings.gmi_api_key), model))
+    return links
 
 
-def video_provider() -> BaseProvider:
-    if settings.pipeline_tier == "mock" or not settings.gmi_api_key:
-        return MockVideoProvider(name="mock-video", assets=_mock_asset("video"))
-    from genblaze_gmicloud import GMICloudVideoProvider
+def _video_links() -> list[Link]:
+    links: list[Link] = []
+    if settings.openai_api_key:
+        from genblaze_openai import SoraProvider
 
-    return GMICloudVideoProvider(api_key=settings.gmi_api_key)
+        links.append(Link("openai-sora", SoraProvider(api_key=settings.openai_api_key), "sora-2"))
+    if settings.gmi_api_key:
+        from genblaze_gmicloud import GMICloudVideoProvider
+
+        provider = GMICloudVideoProvider(api_key=settings.gmi_api_key)
+        links.append(Link("gmi-cloud", provider, "kling-image2video-v2.1-master"))
+        links.append(Link("gmi-cloud", provider, "seedance-2-0-260128"))
+    return links
 
 
-def tts_provider() -> BaseProvider:
-    """ElevenLabs for the final render if keyed; otherwise AWS Polly, then GMI."""
-    if settings.pipeline_tier == "mock":
-        return MockAudioProvider(name="mock-tts", assets=_mock_asset("audio"))
+def _audio_links() -> list[Link]:
+    links: list[Link] = []
     if settings.pipeline_tier == "final" and settings.elevenlabs_api_key:
         from genblaze_elevenlabs import ElevenLabsTTSProvider
 
-        return ElevenLabsTTSProvider(api_key=settings.elevenlabs_api_key)
+        links.append(Link("elevenlabs",
+                          ElevenLabsTTSProvider(api_key=settings.elevenlabs_api_key), "eleven_v3"))
+    if _aws_ready():
+        from app.repo.providers_aws import PollyTTSProvider
 
-    from app.repo.providers_aws import PollyTTSProvider, aws_configured
+        links.append(Link("aws-polly", PollyTTSProvider(), settings.polly_voice))
+    if settings.openai_api_key:
+        from genblaze_openai import OpenAITTSProvider
 
-    if aws_configured():
-        return PollyTTSProvider()
+        links.append(Link("openai-tts", OpenAITTSProvider(api_key=settings.openai_api_key),
+                          "gpt-4o-mini-tts"))
     if settings.gmi_api_key:
         from genblaze_gmicloud import GMICloudAudioProvider
 
-        return GMICloudAudioProvider(api_key=settings.gmi_api_key)
-    return MockAudioProvider(name="mock-tts", assets=_mock_asset("audio"))
+        links.append(Link("gmi-cloud", GMICloudAudioProvider(api_key=settings.gmi_api_key),
+                          "minimax-tts"))
+    return links
 
 
-MODELS = {
-    "mock": {"image": "mock-enhance-v1", "video": "mock-kling-v2", "video_fallbacks": ["mock-seedance"], "tts": "mock-tts-v1"},
-    "dev": {
-        "image": "seedream-5.0-lite",
-        "video": "kling-image2video-v2.1-master",
-        "video_fallbacks": ["seedance-2-0-260128"],
-        "tts": "minimax-tts",
-    },
-    "final": {
-        "image": "seedream-5.0",
-        "video": "kling-image2video-v2.1-master",
-        "video_fallbacks": ["seedance-2-0-260128"],
-        "tts": "eleven_v3",
-    },
-}
+def _chain_or_mock(kind: str, links: list[Link], job_id: str, mock: BaseProvider) -> BaseProvider:
+    if settings.pipeline_tier == "mock" or not links:
+        return mock
+    return ChainProvider(links, job_id=job_id, kind=kind)
 
-# Model ids differ per provider; the pipeline is identical either way. Bedrock has
-# no ACTIVE video model (Nova Reel is LEGACY), so video stays on GMI Cloud and
-# degrades to the free ffmpeg parallax path on a Bedrock still when GMI is down.
-AWS_MODELS = {
-    "dev": {"image": "stability.stable-image-core-v1:1", "tts": "Joanna"},
-    "final": {"image": "stability.sd3-5-large-v1:0", "tts": "Joanna"},
-}
+
+def image_provider(job_id: str = "") -> BaseProvider:
+    return _chain_or_mock("image", _image_links(), job_id,
+                          MockProvider(name="mock-image", assets=_mock_asset("image")))
+
+
+def video_provider(job_id: str = "") -> BaseProvider:
+    return _chain_or_mock("video", _video_links(), job_id,
+                          MockVideoProvider(name="mock-video", assets=_mock_asset("video")))
+
+
+def tts_provider(job_id: str = "") -> BaseProvider:
+    return _chain_or_mock("audio", _audio_links(), job_id,
+                          MockAudioProvider(name="mock-tts", assets=_mock_asset("audio")))
+
+
+def chain_summary() -> dict[str, list[str]]:
+    """What the judge-facing UI shows: the live failover ladder per modality."""
+    if settings.pipeline_tier == "mock":
+        return {"image": ["mock"], "video": ["mock"], "audio": ["mock"]}
+    return {
+        "image": [f"{l.label}:{l.model}" for l in _image_links()],
+        "video": [f"{l.label}:{l.model}" for l in _video_links()],
+        "audio": [f"{l.label}:{l.model}" for l in _audio_links()],
+    }
 
 
 def models() -> dict:
-    tier = settings.pipeline_tier if settings.pipeline_tier in MODELS else "mock"
-    chosen = dict(MODELS[tier])
-    if tier != "mock":
-        from app.repo.providers_aws import aws_configured
-
-        if aws_configured():
-            chosen["image"] = AWS_MODELS[tier]["image"]
-            if not (tier == "final" and settings.elevenlabs_api_key):
-                chosen["tts"] = AWS_MODELS[tier]["tts"]
-    return chosen
+    """First link of each chain — the model a step starts with before failover."""
+    if settings.pipeline_tier == "mock":
+        return {"image": "mock-enhance-v1", "video": "mock-kling-v2",
+                "video_fallbacks": ["mock-seedance"], "tts": "mock-tts-v1"}
+    image, video, audio = _image_links(), _video_links(), _audio_links()
+    return {
+        "image": image[0].model if image else "mock-enhance-v1",
+        "video": video[0].model if video else "mock-kling-v2",
+        "video_fallbacks": [l.model for l in video[1:]],
+        "tts": audio[0].model if audio else "mock-tts-v1",
+    }

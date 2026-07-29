@@ -64,7 +64,7 @@ def build_enhance_image(job_id: str, photo_key: str, prompt: str) -> Pipeline:
         Pipeline(f"enhance-{job_id}", tenant_id=job_id, chain=True)
         .cache(_cache())
         .tracer(_tracer(job_id))
-        .step(image_provider(), model=m["image"], modality=Modality.IMAGE, prompt=prompt, **kwargs)
+        .step(image_provider(job_id), model=m["image"], modality=Modality.IMAGE, prompt=prompt, **kwargs)
     )
 
 
@@ -78,7 +78,7 @@ def build_animate_scene(
         .cache(_cache())
         .tracer(_tracer(job_id))
         .step(
-            video_provider(),
+            video_provider(job_id),
             model=m["video"],
             fallback_models=m["video_fallbacks"],
             modality=Modality.VIDEO,
@@ -96,7 +96,7 @@ def build_narrate(job_id: str, text: str) -> Pipeline:
         Pipeline(f"narrate-{job_id}", tenant_id=job_id, chain=True)
         .cache(_cache())
         .tracer(_tracer(job_id))
-        .step(tts_provider(), model=m["tts"], modality=Modality.AUDIO, prompt=text)
+        .step(tts_provider(job_id), model=m["tts"], modality=Modality.AUDIO, prompt=text)
     )
 
 
