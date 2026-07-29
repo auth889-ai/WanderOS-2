@@ -208,6 +208,12 @@ export function MemoryJobConsole({ jobId }: { jobId: string }) {
             {status.replaceAll("_", " ")} · {job?.progress_pct ?? 0}%
           </span>
         </div>
+        <a
+          href={`/memory/${jobId}/passport`}
+          className="float-right rounded-lg border border-white/20 px-3 py-1.5 text-xs text-white/75 transition hover:bg-white/10"
+        >
+          Experience Passport →
+        </a>
         <h1 className="font-display text-[2rem] leading-tight text-white">
           {storyboard?.title ?? job?.request_text ?? "Loading your trip…"}
         </h1>
