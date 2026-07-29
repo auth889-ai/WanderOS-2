@@ -106,7 +106,7 @@ def complete(
 
         content.append({
             "type": "image",
-            "source": {"type": "base64", "media_type": "image/jpeg",
+            "source": {"type": "base64", "media_type": _sniff_media_type(image_jpeg),
                        "data": base64.standard_b64encode(image_jpeg).decode()},
         })
     instruction = prompt
@@ -146,6 +146,24 @@ def complete(
     if schema is None:
         return {"text": text}
     return _parse_json(text)
+
+
+def _sniff_media_type(data: bytes) -> str:
+    """Declare the media type the bytes ACTUALLY are.
+
+    Bedrock validates the declared media_type against the payload and rejects a
+    mismatch with a bare ValidationException. Scene stills arrive as PNG while
+    extracted video frames are JPEG, so a hardcoded type silently broke the
+    critic on exactly half the scenes — it fell back to the rubric and the
+    verdict was recorded as if no reasoner existed.
+    """
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return "image/png"
+    if data[:3] == b"GIF":
+        return "image/gif"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    return "image/jpeg"
 
 
 def _parse_json(text: str) -> dict[str, Any]:
