@@ -65,6 +65,12 @@ def _image_links() -> list[Link]:
 
         links.append(Link("openai-dalle", DalleProvider(api_key=settings.openai_api_key),
                           "gpt-image-1"))
+    if settings.gemini_api_key:
+        # Native Gemini image provider, added in genblaze-google 0.3.4.
+        from genblaze_google import GeminiImageProvider
+
+        links.append(Link("google-gemini", GeminiImageProvider(api_key=settings.gemini_api_key),
+                          "gemini-2.5-flash-image"))
     if settings.gmi_api_key:
         from genblaze_gmicloud import GMICloudImageProvider
 
