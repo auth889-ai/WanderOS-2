@@ -31,8 +31,32 @@ const State = Annotation.Root({
   storyboard: Annotation<Storyboard | null>(),
   approval: Annotation<AutopilotState["approval"]>(),
   renderJob: Annotation<Record<string, unknown> | null>(),
-  finalApproval: Annotation<{ decision: string } | null>()
+  finalApproval: Annotation<{ decision: string } | null>(),
+  evidence: Annotation<Record<string, unknown> | null>(),
+  claims: Annotation<Claim[]>(),
+  consentDecisions: Annotation<Record<string, string>>()
 });
+
+/** A statement the film might make, with how well the evidence supports it. */
+type Claim = {
+  id: string;
+  text: string;
+  status: "VERIFIED" | "INFERRED" | "USER_CONFIRMED" | "SYNTHETIC" | "CONTRADICTED" | "UNKNOWN";
+  confidence: number;
+  evidence: string[];
+  question: string;
+  day?: number | null;
+};
+
+const DOC_EXT = [".pdf", ".doc", ".docx", ".txt"];
+const VOICE_EXT = [".mp3", ".m4a", ".wav", ".aac", ".ogg"];
+
+function assetKind(key: string): "document" | "voice" | "photo" {
+  const lower = key.toLowerCase();
+  if (DOC_EXT.some((e) => lower.endsWith(e))) return "document";
+  if (VOICE_EXT.some((e) => lower.endsWith(e))) return "voice";
+  return "photo";
+}
 
 async function progress(jobId: string, event: string, stage: string, pct: number, extra: object = {}) {
   await appendProgress(jobId, { event, ...extra }, stage, pct);
@@ -52,6 +76,94 @@ they want, and output language. confidence = how sure you are overall (0-1).`,
   await updateMemoryJob(state.jobId, { inferred: inferred as unknown as Record<string, unknown> });
   await progress(state.jobId, "agent.intake.done", "understanding", 25, { inferred });
   return { inferred };
+}
+
+// ── Node 1.5: evidence — read ALL three source types, then classify every claim
+// by how well the evidence actually supports it. This is the gate that stops the
+// system inventing a memory: nothing may be recreated from an INFERRED claim.
+async function extractEvidence(state: typeof State.State) {
+  await progress(state.jobId, "agent.evidence.started", "understanding", 26);
+  const assets = await Promise.all(
+    state.assetKeys.map(async (key) => ({
+      key,
+      kind: assetKind(key),
+      url: isB2Configured() ? await presignDownload(key) : `unreachable://no-b2/${key}`
+    }))
+  );
+
+  try {
+    const res = await fetch(`${MEDIA_WORKER_URL}/evidence/classify`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ job_id: state.jobId, assets, timeline: state.timeline ?? null }),
+      signal: AbortSignal.timeout(300_000)
+    });
+    if (!res.ok) throw new Error(`evidence engine ${res.status}`);
+    const data = await res.json();
+    const claims: Claim[] = data.claims ?? [];
+    await updateMemoryJob(state.jobId, {
+      evidence: data.evidence as Record<string, unknown>,
+      claims: claims as unknown as Record<string, unknown>
+    });
+    await progress(state.jobId, "agent.evidence.done", "understanding", 32, {
+      sources: data.evidence?.sources_used ?? [],
+      classifier: data.classifier,
+      verified: claims.filter((c) => c.status === "VERIFIED").length,
+      uncertain: claims.filter((c) => c.status === "INFERRED" || c.status === "CONTRADICTED").length
+    });
+    return { evidence: data.evidence, claims };
+  } catch (e) {
+    // Never fabricate evidence on failure — proceed with none, and say so.
+    await progress(state.jobId, "agent.evidence.degraded", "understanding", 32, {
+      error: e instanceof Error ? e.message : String(e)
+    });
+    return { evidence: null, claims: [] as Claim[] };
+  }
+}
+
+// ── Node 2.5: the CONSENT checkpoint — durable pause on the truth boundary.
+// Only the traveler can turn "the itinerary planned it" into "it happened".
+async function consentCheckpoint(state: typeof State.State) {
+  const pending = (state.claims ?? []).filter(
+    (c) => (c.status === "INFERRED" || c.status === "CONTRADICTED") && c.question
+  );
+  if (pending.length === 0) return { consentDecisions: {} };
+
+  await updateMemoryJob(state.jobId, { status: "awaiting_consent" });
+  await progress(state.jobId, "checkpoint.consent", "awaiting_consent", 38, {
+    questions: pending.length
+  });
+  const decisions = interrupt({
+    checkpoint: "consent",
+    questions: pending.map((c) => ({
+      id: c.id,
+      text: c.text,
+      question: c.question,
+      status: c.status,
+      evidence: c.evidence
+    }))
+  }) as Record<string, string>;
+
+  // Fold answers in via the engine so promotion to USER_CONFIRMED happens in
+  // exactly one place (media-worker truth.apply_consent), never client-side.
+  try {
+    const res = await fetch(`${MEDIA_WORKER_URL}/evidence/consent`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ claims: state.claims, decisions }),
+      signal: AbortSignal.timeout(30_000)
+    });
+    if (res.ok) {
+      const data = await res.json();
+      await progress(state.jobId, "agent.consent.applied", "planning", 42, {
+        generatable: data.generatable?.length ?? 0
+      });
+      return { claims: data.claims as Claim[], consentDecisions: decisions };
+    }
+  } catch {
+    /* fall through — keep the unpromoted claims rather than guessing */
+  }
+  return { consentDecisions: decisions };
 }
 
 // ── Node 2: understand — deterministic EXIF/GPS timeline via the media-worker engine
@@ -121,10 +233,33 @@ async function planStory(state: typeof State.State) {
     .map((g) => `Day ${g.day} [${g.rule}]: ${g.description} → proposed prompt: ${g.proposal.prompt}`)
     .join("\n");
 
+  // The truth boundary, handed to the planner as hard constraints.
+  const claims = state.claims ?? [];
+  const verified = claims.filter((c) => c.status === "VERIFIED");
+  const confirmed = claims.filter((c) => c.status === "USER_CONFIRMED");
+  const forbidden = claims.filter(
+    (c) => c.status === "INFERRED" || c.status === "CONTRADICTED" || c.status === "UNKNOWN"
+  );
+  const truthBrief = claims.length
+    ? `
+EVIDENCE-BACKED MOMENTS (show these with the real media, no disclosure needed):
+${verified.map((c) => `- ${c.text}`).join("\n") || "none"}
+
+TRAVELER-CONFIRMED MOMENTS (no photo exists, but the traveler confirmed it happened —
+you MAY recreate these as source="synthetic_scene", needsConsent=true):
+${confirmed.map((c) => `- ${c.text}`).join("\n") || "none"}
+
+FORBIDDEN — the traveler did NOT confirm these. You must NOT depict them, mention them
+in narration, or imply they happened:
+${forbidden.map((c) => `- ${c.text}`).join("\n") || "none"}
+`
+    : "";
+
   const storyboard = await invokeStructured(
     StoryboardSchema,
     `You are the story planner for a cinematic travel memory film.
 Trip: ${JSON.stringify(state.inferred)}
+${truthBrief}
 Timeline (photo keys per day):
 ${timelineBrief}
 Missing-memory proposals (each REQUIRES viewer consent; include as source="synthetic_scene" with needsConsent=true):
@@ -233,6 +368,8 @@ export function buildAutopilotGraph(checkpointer?: PostgresSaver | MemorySaver) 
   const graph = new StateGraph(State)
     .addNode("intake", intake)
     .addNode("understand", understand)
+    .addNode("extract_evidence", extractEvidence)
+    .addNode("consent_checkpoint", consentCheckpoint)
     .addNode("detect_gaps", detectGaps)
     .addNode("plan_story", planStory)
     .addNode("storyboard_approval", storyboardApproval)
@@ -241,7 +378,11 @@ export function buildAutopilotGraph(checkpointer?: PostgresSaver | MemorySaver) 
     .addNode("deliver", deliver)
     .addEdge("__start__", "intake")
     .addEdge("intake", "understand")
-    .addEdge("understand", "detect_gaps")
+    // Evidence runs AFTER the timeline so claim classification can weigh
+    // EXIF/GPS structure alongside the document, voice and photo content.
+    .addEdge("understand", "extract_evidence")
+    .addEdge("extract_evidence", "consent_checkpoint")
+    .addEdge("consent_checkpoint", "detect_gaps")
     .addEdge("detect_gaps", "plan_story")
     .addEdge("plan_story", "storyboard_approval")
     .addEdge("storyboard_approval", "generate_film")

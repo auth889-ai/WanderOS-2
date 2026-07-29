@@ -11,6 +11,7 @@ export type MemoryJobStatus =
   | "collecting"
   | "understanding"
   | "planning"
+  | "awaiting_consent"
   | "awaiting_storyboard_approval"
   | "generating"
   | "critiquing"
@@ -29,6 +30,9 @@ export type MemoryJobRow = {
   asset_keys: string[];
   timeline: unknown | null;
   storyboard: unknown | null;
+  evidence: unknown | null;
+  claims: unknown | null;
+  consent_decisions: Record<string, string> | null;
   storyboard_version: number;
   film_key: string | null;
   film_sha256: string | null;
@@ -87,6 +91,9 @@ export async function updateMemoryJob(
       | "timeline"
       | "storyboard"
       | "storyboard_version"
+      | "evidence"
+      | "claims"
+      | "consent_decisions"
       | "film_key"
       | "film_sha256"
       | "run_id"
@@ -145,8 +152,8 @@ export async function appendAssetKeys(id: string, keys: string[]): Promise<void>
 
 export async function recordApproval(input: {
   jobId: string;
-  checkpoint: "storyboard" | "scene_escalation" | "final";
-  decision: "approved" | "edited" | "rejected" | "revision_requested";
+  checkpoint: "storyboard" | "scene_escalation" | "final" | "consent";
+  decision: "approved" | "edited" | "rejected" | "revision_requested" | "answered";
   payload?: unknown;
   actorId?: string | null;
   b2Key?: string | null;

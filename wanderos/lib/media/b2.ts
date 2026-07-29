@@ -51,6 +51,8 @@ export type TripFolder =
   | "subtitles"
   | "storyboards"
   | "approvals"
+  | "consent"
+  | "evidence"
   | "manifests"
   | "critic-results"
   | "logs"

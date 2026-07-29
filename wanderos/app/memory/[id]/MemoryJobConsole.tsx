@@ -40,6 +40,15 @@ type Storyboard = {
   scenes: Scene[];
 };
 
+type Claim = {
+  id: string;
+  text: string;
+  status: string;
+  confidence: number;
+  evidence: string[];
+  question: string;
+};
+
 type JobDetail = {
   job: {
     id: string;
@@ -50,6 +59,8 @@ type JobDetail = {
     error: string | null;
     progress_pct: number;
     current_stage: string | null;
+    claims: Claim[] | null;
+    evidence: { sources_used?: string[] } | null;
   };
   engine: {
     status?: string;
@@ -72,6 +83,7 @@ export function MemoryJobConsole({ jobId }: { jobId: string }) {
   const [detail, setDetail] = useState<JobDetail | null>(null);
   const [events, setEvents] = useState<Record<string, unknown>[]>([]);
   const [consents, setConsents] = useState<Record<number, boolean>>({});
+  const [claimAnswers, setClaimAnswers] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [verify, setVerify] = useState<JobDetail["engine"] extends infer _ ? { verified: boolean; checks: Record<string, { pass: boolean; detail: string }> } | null : never>(null);
@@ -162,6 +174,30 @@ export function MemoryJobConsole({ jobId }: { jobId: string }) {
   const consentScenes = storyboard?.scenes.filter((s) => s.needsConsent) ?? [];
   const allConsentsAnswered = consentScenes.every((s) => s.idx in consents);
 
+  const claims = job?.claims ?? [];
+  const pendingClaims = claims.filter(
+    (c) => (c.status === "INFERRED" || c.status === "CONTRADICTED") && c.question
+  );
+  const allClaimsAnswered = pendingClaims.every((c) => c.id in claimAnswers);
+
+  async function submitConsent() {
+    setBusy(true);
+    setError("");
+    try {
+      const res = await fetch(`/api/memory/${jobId}/consent`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ decisions: claimAnswers })
+      });
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? "consent failed");
+      await refresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "consent failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <div className="mx-auto max-w-4xl space-y-8 py-8">
       <header className="space-y-2">
@@ -196,6 +232,97 @@ export function MemoryJobConsole({ jobId }: { jobId: string }) {
           ))}
         </ul>
       </section>
+
+      {/* Evidence + the truth boundary — the checkpoint no other travel app has */}
+      {claims.length > 0 && (
+        <section className="space-y-4">
+          <h2 className="flex items-center gap-2 text-lg font-semibold text-slate-900">
+            <ShieldCheck className="h-5 w-5 text-teal-600" /> What your evidence proves
+            {job?.evidence?.sources_used?.length ? (
+              <span className="text-xs font-normal text-slate-500">
+                read from {job.evidence.sources_used.join(", ")}
+              </span>
+            ) : null}
+          </h2>
+
+          <div className="space-y-2">
+            {claims.map((c) => {
+              const verified = c.status === "VERIFIED";
+              const confirmed = c.status === "USER_CONFIRMED";
+              return (
+                <div
+                  key={c.id}
+                  className={`rounded-lg border p-3 ${
+                    verified
+                      ? "border-emerald-200 bg-emerald-50/50"
+                      : confirmed
+                        ? "border-teal-200 bg-teal-50/50"
+                        : "border-amber-200 bg-amber-50/50"
+                  }`}
+                >
+                  <div className="flex items-start gap-2">
+                    {verified ? (
+                      <BadgeCheck className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
+                    ) : (
+                      <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+                    )}
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-medium text-slate-800">{c.text}</p>
+                      <p className="mt-0.5 text-[11px] uppercase tracking-wide text-slate-500">
+                        {c.status.replaceAll("_", " ")} · confidence {Math.round((c.confidence ?? 0) * 100)}%
+                        {c.evidence?.length ? ` · from ${c.evidence.join(", ")}` : ""}
+                      </p>
+
+                      {c.question && (c.status === "INFERRED" || c.status === "CONTRADICTED") && (
+                        <div className="mt-2">
+                          <p className="mb-1.5 text-sm text-slate-700">{c.question}</p>
+                          <div className="flex flex-wrap gap-2">
+                            {[
+                              ["confirmed", "Yes — recreate it, labeled"],
+                              ["denied", "No — leave it out"],
+                              ["unsure", "Not sure"]
+                            ].map(([value, label]) => (
+                              <button
+                                key={value}
+                                onClick={() => setClaimAnswers((a) => ({ ...a, [c.id]: value }))}
+                                className={`rounded-md px-2.5 py-1 text-xs font-medium ${
+                                  claimAnswers[c.id] === value
+                                    ? "bg-amber-600 text-white"
+                                    : "bg-white text-amber-800 ring-1 ring-amber-300 hover:bg-amber-50"
+                                }`}
+                              >
+                                {label}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {status === "awaiting_consent" && (
+            <div className="flex items-center gap-3">
+              <button
+                onClick={submitConsent}
+                disabled={busy || !allClaimsAnswered}
+                className="inline-flex items-center gap-2 rounded-xl bg-teal-600 px-5 py-2.5 font-semibold text-white transition hover:bg-teal-700 disabled:opacity-50"
+              >
+                {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
+                Confirm — then plan the story
+              </button>
+              {!allClaimsAnswered && (
+                <span className="text-xs text-amber-600">
+                  Answer each question above. Nothing is recreated without your say-so.
+                </span>
+              )}
+            </div>
+          )}
+        </section>
+      )}
 
       {/* Storyboard checkpoint */}
       {storyboard && (
