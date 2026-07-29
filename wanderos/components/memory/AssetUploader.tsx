@@ -104,14 +104,14 @@ export function AssetUploader({
         }}
         onClick={() => inputRef.current?.click()}
         className={`cursor-pointer rounded-2xl border-2 border-dashed p-8 text-center transition ${
-          dragging ? "border-teal-400 bg-teal-50" : "border-slate-300 bg-slate-50 hover:border-teal-300"
+          dragging ? "border-aurora/40 bg-aurora/20" : "border-white/15 bg-white/5 hover:border-aurora/40"
         }`}
       >
-        <p className="font-medium text-slate-700">Drop your trip here — photos, clips, itinerary PDF</p>
-        <p className="mt-1 text-sm text-slate-500">
+        <p className="font-medium text-white/75">Drop your trip here — photos, clips, itinerary PDF</p>
+        <p className="mt-1 text-sm text-white/45">
           The messier the better. The agent sorts it out. Up to {max} files.
         </p>
-        {uploading > 0 && <p className="mt-2 text-sm text-teal-600">Uploading {uploading} file(s) to secure storage…</p>}
+        {uploading > 0 && <p className="mt-2 text-sm text-aurora">Uploading {uploading} file(s) to secure storage…</p>}
         <input
           ref={inputRef}
           type="file"
@@ -122,14 +122,14 @@ export function AssetUploader({
         />
       </div>
 
-      {error && <p className="text-sm text-red-600">{error}</p>}
+      {error && <p className="text-sm text-coral">{error}</p>}
 
       {assets.length > 0 && (
-        <div className="flex items-center gap-4 text-sm text-slate-600">
-          <span className="rounded-full bg-slate-100 px-3 py-1">{photos} photos</span>
-          <span className="rounded-full bg-slate-100 px-3 py-1">{clips} clips</span>
-          {pdfs > 0 && <span className="rounded-full bg-slate-100 px-3 py-1">{pdfs} itinerary</span>}
-          <span className="ml-auto text-xs text-slate-400">stored durably on Backblaze B2</span>
+        <div className="flex items-center gap-4 text-sm text-white/60">
+          <span className="rounded-full bg-white/5 px-3 py-1">{photos} photos</span>
+          <span className="rounded-full bg-white/5 px-3 py-1">{clips} clips</span>
+          {pdfs > 0 && <span className="rounded-full bg-white/5 px-3 py-1">{pdfs} itinerary</span>}
+          <span className="ml-auto text-xs text-white/35">stored durably on Backblaze B2</span>
         </div>
       )}
     </div>

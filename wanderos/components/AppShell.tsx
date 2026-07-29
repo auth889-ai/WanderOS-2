@@ -6,6 +6,7 @@ import { TravelerDashboardBackground } from "@/components/traveler/TravelerDashb
 const navByRole: Record<Role, Array<[string, string]>> = {
   traveler: [
     ["Dashboard", "/dashboard"],
+    ["Autopilot", "/memory/new"],
     ["Explore", "/marketplace"],
     ["Trips", "/trips"],
     ["Discover", "/discover"],
