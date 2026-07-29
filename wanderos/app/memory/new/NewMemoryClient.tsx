@@ -61,25 +61,35 @@ export function NewMemoryClient() {
   const canStart = jobId && photoCount >= 3 && !busy;
 
   return (
-    <div className="-m-6 min-h-screen bg-canvas p-6 md:-m-8 md:p-8">
-      <div className="mx-auto max-w-2xl py-10">
-        <header className="mb-9 text-center">
-          <p className="mb-3 text-[11px] font-semibold uppercase tracking-[0.18em] text-slateInk">
+    <div className="mx-auto max-w-2xl py-8">
+      {/* Photographic hero, as in the reference splash — the imagery IS the
+          product, so it stays visible instead of being covered by a flat panel. */}
+      <header className="relative mb-6 overflow-hidden rounded-3xl">
+        <img
+          src="/images/bg/mountain.webp"
+          alt=""
+          className="h-64 w-full object-cover"
+        />
+        <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(20,26,18,0.15),rgba(20,26,18,0.82))]" />
+        <div className="absolute inset-x-0 bottom-0 p-7">
+          <p className="mb-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-white/70">
             Travel Autopilot
           </p>
-          <h1 className="font-display text-[2.5rem] leading-[1.12] text-ink">
+          <h1 className="font-display text-[2.4rem] leading-[1.08] text-white">
             Every journey
             <br />
             has a feeling.
           </h1>
-          <p className="mx-auto mt-4 max-w-md text-[15px] leading-relaxed text-slateInk">
-            Drop in the messy pile — photos, your itinerary, a voice note. The agent
-            reconstructs what happened, and asks before recreating anything it can&apos;t prove.
-          </p>
-        </header>
+        </div>
+      </header>
 
-        <section className="rounded-2xl border border-line bg-card p-6 shadow-[0_1px_2px_rgba(26,29,25,0.04)]">
-          <label className="mb-2 block text-sm font-medium text-ink">
+      <p className="mb-6 px-1 text-[15px] leading-relaxed text-white/70">
+        Drop in the messy pile — photos, your itinerary, a voice note. The agent
+        reconstructs what happened, and asks before recreating anything it can&apos;t prove.
+      </p>
+
+      <section className="rounded-2xl border border-white/15 bg-white/[0.07] p-6 backdrop-blur-xl">
+          <label className="mb-2 block text-sm font-medium text-white">
             What should this memory feel like?
           </label>
           <textarea
@@ -88,7 +98,7 @@ export function NewMemoryClient() {
             disabled={Boolean(jobId)}
             rows={3}
             placeholder="Make something emotional from our Bali honeymoon — warm and nostalgic"
-            className="w-full resize-none rounded-xl border border-line bg-canvas/60 p-4 text-[15px] text-ink outline-none transition placeholder:text-slateInk/50 focus:border-forest/40 focus:bg-card disabled:opacity-60"
+            className="w-full resize-none rounded-xl border border-white/15 bg-black/25 p-4 text-[15px] text-white outline-none transition placeholder:text-white/35 focus:border-white/40 disabled:opacity-60"
           />
           {!jobId && (
             <button
@@ -103,11 +113,11 @@ export function NewMemoryClient() {
           )}
         </section>
 
-        {jobId && (
-          <section className="mt-5 space-y-4 rounded-2xl border border-line bg-card p-6 shadow-[0_1px_2px_rgba(26,29,25,0.04)]">
+      {jobId && (
+          <section className="mt-5 space-y-4 rounded-2xl border border-white/15 bg-white/[0.07] p-6 backdrop-blur-xl">
             <AssetUploader jobId={jobId} assets={assets} onChange={setAssets} />
             {photoCount > 0 && photoCount < 3 && (
-              <p className="text-sm text-forest">
+              <p className="text-sm text-peach">
                 Add at least 3 photos so the agent has enough to work with.
               </p>
             )}
@@ -120,18 +130,17 @@ export function NewMemoryClient() {
               Start the Autopilot
               {!busy && <ArrowRight className="h-4 w-4" />}
             </button>
-            <p className="text-center text-xs leading-relaxed text-slateInk">
+            <p className="text-center text-xs leading-relaxed text-white/50">
               Nothing is generated or published without your approval.
             </p>
           </section>
-        )}
+      )}
 
-        {error && (
+      {error && (
           <p className="mt-4 rounded-xl border border-coral/30 bg-coral/5 p-3 text-sm text-coral">
             {error}
           </p>
-        )}
-      </div>
+      )}
     </div>
   );
 }

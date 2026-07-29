@@ -34,7 +34,9 @@ export async function AppShell({ children }: { children: React.ReactNode }) {
           <TravelerDashboardBackground />
         ) : (
           <>
-            <video className="h-full w-full object-cover opacity-20" src="/videos/paris-hero.mp4" autoPlay muted loop playsInline />
+            {/* /videos/paris-hero.mp4 was referenced but never existed, so this
+                background silently rendered black. Points at a real asset now. */}
+            <video className="h-full w-full object-cover opacity-20" src="/videos/326739_medium.mp4" autoPlay muted loop playsInline />
             <div className="absolute inset-0 bg-[linear-gradient(145deg,rgba(18,14,24,.96),rgba(38,24,28,.92)_48%,rgba(12,18,19,.96))]" />
           </>
         )}
