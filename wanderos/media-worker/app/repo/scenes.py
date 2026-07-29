@@ -98,13 +98,17 @@ def _record(trip_id: str, key: str, doc: dict) -> None:
         pass  # lineage record failure must not kill the render; job log still has it
 
 
-def _first_video_asset(result) -> str | None:
+def _first_asset(result, kind: str) -> str | None:
     run = getattr(result, "run", result)
     for step in getattr(run, "steps", []) or []:
         for a in getattr(step, "assets", []) or []:
-            if "video" in (a.media_type or ""):
+            if kind in (a.media_type or ""):
                 return a.url
     return None
+
+
+def _first_video_asset(result) -> str | None:
+    return _first_asset(result, "video")
 
 
 def _generated_clip(job_id: str, trip_id: str, scene: dict, image_key: str | None,
@@ -114,7 +118,11 @@ def _generated_clip(job_id: str, trip_id: str, scene: dict, image_key: str | Non
     seconds = int(scene.get("durationSec", 5))
     models = pipelines.models()
     attempts: list[dict] = []
-    state = {"n": 0, "feedback": None, "model": models["video"]}
+    # Video generation needs GMI Cloud (Bedrock has no ACTIVE video model). Without
+    # it the scene still gets real AI generation — Bedrock image + ffmpeg parallax.
+    video_available = bool(settings.gmi_api_key) and settings.pipeline_tier != "mock"
+    state = {"n": 0, "feedback": None,
+             "model": models["video"] if video_available else models["image"]}
 
     def factory(ctx):
         state["n"] += 1
@@ -129,19 +137,26 @@ def _generated_clip(job_id: str, trip_id: str, scene: dict, image_key: str | Non
                     prompt = f"{prompt}\nRepair instructions: {patch['prompt_patch']}"
             except (json.JSONDecodeError, TypeError):
                 prompt = f"{prompt}\nRepair instructions: {fb}"
+        # Record the model that actually runs this attempt — the verdict and the
+        # provenance record must name the real one, not the route we defaulted to.
+        use_video = video_available and bool(image_key)
+        if not use_video:
+            state["model"] = models["image"]
         emit_job_event(job_id, "scene.attempt.started",
                        {"scene": idx, "attempt": state["n"], "model": state["model"]})
-        if image_key:
-            p = pipelines.build_animate_scene(f"{job_id}-s{idx}a{state['n']}", image_key,
-                                              prompt, seconds)
-        else:
-            p = pipelines.build_enhance_image(f"{job_id}-s{idx}a{state['n']}",
-                                              scene.get("assetKey") or "", prompt)
-        return p
+        tag = f"{job_id}-s{idx}a{state['n']}"
+        if use_video:
+            return pipelines.build_animate_scene(tag, image_key, prompt, seconds)
+        # Image route: image-to-image when we have the traveler's real photo
+        # (enhancement, not fabrication), text-to-image otherwise.
+        return pipelines.build_enhance_image(tag, image_key or "", prompt)
 
     def score(result) -> float:
         url = _first_video_asset(result)
-        media = _fetch_asset(url, _work(job_id) / f"s{idx}a{state['n']}.mp4") if url else None
+        suffix = "mp4"
+        if url is None:
+            url, suffix = _first_asset(result, "image"), "png"
+        media = _fetch_asset(url, _work(job_id) / f"s{idx}a{state['n']}.{suffix}") if url else None
         verdict = critique_scene(scene, media, attempt=state["n"])
         verdict["attempt"], verdict["model"], verdict["asset_url"] = state["n"], state["model"], url
         attempts.append(verdict)
@@ -160,10 +175,21 @@ def _generated_clip(job_id: str, trip_id: str, scene: dict, image_key: str | Non
     max_attempts = 1 if settings.pipeline_tier == "mock" else settings.max_scene_attempts
     loop_result = AgentLoop(factory, evaluator, max_iterations=max_attempts).run()
 
-    url = _first_video_asset(loop_result.final)
+    final = loop_result.final
+    url = _first_video_asset(final)
     media = _fetch_asset(url, out) if url else None
-    if media is None:  # mock tier or download failure — honest labeled placeholder
-        _placeholder_clip(out, seconds, f"scene-{idx}")
+    if media is None:
+        # No video asset. Bedrock has no ACTIVE video model, so the honest path is
+        # the real generated still + the free ffmpeg parallax move — a genuine
+        # scene, not a placeholder. Placeholder only if there is no image either.
+        image_url = _first_asset(final, "image")
+        still = _fetch_asset(image_url, work_still := _work(job_id) / f"gen_{idx:02d}.png") if image_url else None
+        if still is not None:
+            emit_job_event(job_id, "scene.degraded.parallax",
+                           {"scene": idx, "reason": "no video model available; animating generated still"})
+            _parallax_clip(still, out, seconds)
+        else:
+            _placeholder_clip(out, seconds, f"scene-{idx}")
     verdicts_jsonl = "\n".join(json.dumps(a, default=str) for a in attempts)
     _record(trip_id, f"evaluations/{job_id}/scene-{idx}-verdicts.jsonl",
             {"jsonl": verdicts_jsonl})

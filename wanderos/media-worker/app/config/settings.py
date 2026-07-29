@@ -30,6 +30,15 @@ class Settings(BaseSettings):
     elevenlabs_api_key: str = ""
     nvidia_api_key: str = ""
 
+    # AWS — Bedrock (Stability image) + Polly (narration). Bedrock image runs in
+    # us-west-2: the Stability text-to-image models are ACTIVE there, while Nova
+    # Canvas/Reel are LEGACY and refuse InvokeModel on cold accounts.
+    aws_access_key_id: str = ""
+    aws_secret_access_key: str = ""
+    aws_region: str = "us-east-1"
+    bedrock_region: str = "us-west-2"
+    polly_voice: str = "Joanna"
+
     # Claude critic (Experience Director's quality gate)
     anthropic_api_key: str = ""
     critic_model: str = "claude-opus-5"

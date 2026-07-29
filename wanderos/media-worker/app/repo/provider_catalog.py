@@ -35,11 +35,19 @@ def _mock_asset(kind: str):
 
 
 def image_provider() -> BaseProvider:
-    if settings.pipeline_tier == "mock" or not settings.gmi_api_key:
+    """AWS Bedrock (Stability) is primary; GMI Cloud is the fallback."""
+    if settings.pipeline_tier == "mock":
         return MockProvider(name="mock-image", assets=_mock_asset("image"))
-    from genblaze_gmicloud import GMICloudImageProvider
 
-    return GMICloudImageProvider(api_key=settings.gmi_api_key)
+    from app.repo.providers_aws import BedrockImageProvider, aws_configured
+
+    if aws_configured():
+        return BedrockImageProvider()
+    if settings.gmi_api_key:
+        from genblaze_gmicloud import GMICloudImageProvider
+
+        return GMICloudImageProvider(api_key=settings.gmi_api_key)
+    return MockProvider(name="mock-image", assets=_mock_asset("image"))
 
 
 def video_provider() -> BaseProvider:
@@ -51,15 +59,23 @@ def video_provider() -> BaseProvider:
 
 
 def tts_provider() -> BaseProvider:
+    """ElevenLabs for the final render if keyed; otherwise AWS Polly, then GMI."""
+    if settings.pipeline_tier == "mock":
+        return MockAudioProvider(name="mock-tts", assets=_mock_asset("audio"))
     if settings.pipeline_tier == "final" and settings.elevenlabs_api_key:
         from genblaze_elevenlabs import ElevenLabsTTSProvider
 
         return ElevenLabsTTSProvider(api_key=settings.elevenlabs_api_key)
-    if settings.pipeline_tier == "mock" or not settings.gmi_api_key:
-        return MockAudioProvider(name="mock-tts", assets=_mock_asset("audio"))
-    from genblaze_gmicloud import GMICloudAudioProvider
 
-    return GMICloudAudioProvider(api_key=settings.gmi_api_key)
+    from app.repo.providers_aws import PollyTTSProvider, aws_configured
+
+    if aws_configured():
+        return PollyTTSProvider()
+    if settings.gmi_api_key:
+        from genblaze_gmicloud import GMICloudAudioProvider
+
+        return GMICloudAudioProvider(api_key=settings.gmi_api_key)
+    return MockAudioProvider(name="mock-tts", assets=_mock_asset("audio"))
 
 
 MODELS = {
@@ -78,7 +94,23 @@ MODELS = {
     },
 }
 
+# Model ids differ per provider; the pipeline is identical either way. Bedrock has
+# no ACTIVE video model (Nova Reel is LEGACY), so video stays on GMI Cloud and
+# degrades to the free ffmpeg parallax path on a Bedrock still when GMI is down.
+AWS_MODELS = {
+    "dev": {"image": "stability.stable-image-core-v1:1", "tts": "Joanna"},
+    "final": {"image": "stability.sd3-5-large-v1:0", "tts": "Joanna"},
+}
+
 
 def models() -> dict:
     tier = settings.pipeline_tier if settings.pipeline_tier in MODELS else "mock"
-    return MODELS[tier]
+    chosen = dict(MODELS[tier])
+    if tier != "mock":
+        from app.repo.providers_aws import aws_configured
+
+        if aws_configured():
+            chosen["image"] = AWS_MODELS[tier]["image"]
+            if not (tier == "final" and settings.elevenlabs_api_key):
+                chosen["tts"] = AWS_MODELS[tier]["tts"]
+    return chosen

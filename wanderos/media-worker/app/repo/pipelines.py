@@ -59,7 +59,7 @@ def presign(key: str, expires_in: int = 600) -> str:
 
 def build_enhance_image(job_id: str, photo_key: str, prompt: str) -> Pipeline:
     m = models()
-    kwargs = {} if settings.pipeline_tier == "mock" else {"image": presign(photo_key)}
+    kwargs = {} if (settings.pipeline_tier == "mock" or not photo_key) else {"image": presign(photo_key)}
     return (
         Pipeline(f"enhance-{job_id}", tenant_id=job_id, chain=True)
         .cache(_cache())
