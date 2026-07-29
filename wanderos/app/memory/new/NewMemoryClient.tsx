@@ -2,11 +2,11 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { Film, Loader2, Sparkles } from "lucide-react";
+import { ArrowRight, Loader2 } from "lucide-react";
 import { AssetUploader, type UploadedAsset } from "@/components/memory/AssetUploader";
 
 /**
- * Autopilot intake: one sentence + the messy pile of trip files. That's the whole ask.
+ * Autopilot intake: one sentence + the messy pile of trip files.
  * Creates the memory job first (so uploads have a B2 prefix), then lets the user
  * upload directly to B2, then hands off to the agent.
  */
@@ -61,66 +61,77 @@ export function NewMemoryClient() {
   const canStart = jobId && photoCount >= 3 && !busy;
 
   return (
-    <div className="mx-auto max-w-3xl space-y-8 py-8">
-      <header className="space-y-2">
-        <div className="flex items-center gap-2 text-aurora">
-          <Film className="h-6 w-6" />
-          <span className="text-sm font-semibold uppercase tracking-wide">Memory Autopilot</span>
-        </div>
-        <h1 className="text-3xl font-bold text-white">Don&apos;t let this trip get lost</h1>
-        <p className="text-white/60">
-          70% of trip photos are never looked at again. Tell the agent what this trip meant,
-          drop in the messy pile, and it will craft a cinematic memory film — with your approval
-          at every important step.
-        </p>
-      </header>
-
-      <section className="space-y-3">
-        <label className="block text-sm font-medium text-white/75">
-          What should this memory feel like?
-        </label>
-        <textarea
-          value={requestText}
-          onChange={(e) => setRequestText(e.target.value)}
-          disabled={Boolean(jobId)}
-          rows={3}
-          placeholder='e.g. "Please make something emotional from our Bali honeymoon — warm and nostalgic, in English"'
-          className="w-full rounded-xl border border-white/15 bg-white/5 p-4 text-white placeholder:text-white/30 focus:border-aurora/60 focus:outline-none disabled:opacity-60"
-        />
-        {!jobId && (
-          <button
-            onClick={createJob}
-            disabled={requestText.trim().length < 3 || busy}
-            className="inline-flex items-center gap-2 rounded-xl bg-coral px-5 py-2.5 font-medium text-night transition hover:bg-peach disabled:opacity-50"
-          >
-            {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
-            Begin — add your trip files next
-          </button>
-        )}
-      </section>
-
-      {jobId && (
-        <section className="space-y-4">
-          <AssetUploader jobId={jobId} assets={assets} onChange={setAssets} />
-          {photoCount > 0 && photoCount < 3 && (
-            <p className="text-sm text-peach">Add at least 3 photos so the agent has enough to work with.</p>
-          )}
-          <button
-            onClick={startAutopilot}
-            disabled={!canStart}
-            className="inline-flex items-center gap-2 rounded-xl bg-coral px-6 py-3 font-semibold text-night transition hover:bg-peach disabled:opacity-50"
-          >
-            {busy ? <Loader2 className="h-5 w-5 animate-spin" /> : <Film className="h-5 w-5" />}
-            Start the Autopilot
-          </button>
-          <p className="text-xs text-white/45">
-            The agent will understand your trip, plan the story, and pause for your approval before
-            anything is generated. Nothing is published without you.
+    <div className="-m-6 min-h-screen bg-canvas p-6 md:-m-8 md:p-8">
+      <div className="mx-auto max-w-2xl py-10">
+        <header className="mb-9 text-center">
+          <p className="mb-3 text-[11px] font-semibold uppercase tracking-[0.18em] text-slateInk">
+            Travel Autopilot
           </p>
-        </section>
-      )}
+          <h1 className="font-display text-[2.5rem] leading-[1.12] text-ink">
+            Every journey
+            <br />
+            has a feeling.
+          </h1>
+          <p className="mx-auto mt-4 max-w-md text-[15px] leading-relaxed text-slateInk">
+            Drop in the messy pile — photos, your itinerary, a voice note. The agent
+            reconstructs what happened, and asks before recreating anything it can&apos;t prove.
+          </p>
+        </header>
 
-      {error && <p className="text-sm text-coral">{error}</p>}
+        <section className="rounded-2xl border border-line bg-card p-6 shadow-[0_1px_2px_rgba(26,29,25,0.04)]">
+          <label className="mb-2 block text-sm font-medium text-ink">
+            What should this memory feel like?
+          </label>
+          <textarea
+            value={requestText}
+            onChange={(e) => setRequestText(e.target.value)}
+            disabled={Boolean(jobId)}
+            rows={3}
+            placeholder="Make something emotional from our Bali honeymoon — warm and nostalgic"
+            className="w-full resize-none rounded-xl border border-line bg-canvas/60 p-4 text-[15px] text-ink outline-none transition placeholder:text-slateInk/50 focus:border-forest/40 focus:bg-card disabled:opacity-60"
+          />
+          {!jobId && (
+            <button
+              onClick={createJob}
+              disabled={requestText.trim().length < 3 || busy}
+              className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-forest px-5 py-3.5 text-[15px] font-semibold text-white transition hover:bg-forestDeep disabled:opacity-40"
+            >
+              {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+              Continue
+              {!busy && <ArrowRight className="h-4 w-4" />}
+            </button>
+          )}
+        </section>
+
+        {jobId && (
+          <section className="mt-5 space-y-4 rounded-2xl border border-line bg-card p-6 shadow-[0_1px_2px_rgba(26,29,25,0.04)]">
+            <AssetUploader jobId={jobId} assets={assets} onChange={setAssets} />
+            {photoCount > 0 && photoCount < 3 && (
+              <p className="text-sm text-forest">
+                Add at least 3 photos so the agent has enough to work with.
+              </p>
+            )}
+            <button
+              onClick={startAutopilot}
+              disabled={!canStart}
+              className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-forest px-6 py-3.5 text-[15px] font-semibold text-white transition hover:bg-forestDeep disabled:opacity-40"
+            >
+              {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+              Start the Autopilot
+              {!busy && <ArrowRight className="h-4 w-4" />}
+            </button>
+            <p className="text-center text-xs leading-relaxed text-slateInk">
+              Nothing is generated or published without your approval.
+            </p>
+          </section>
+        )}
+
+        {error && (
+          <p className="mt-4 rounded-xl border border-coral/30 bg-coral/5 p-3 text-sm text-coral">
+            {error}
+          </p>
+        )}
+      </div>
     </div>
   );
 }

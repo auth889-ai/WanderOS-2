@@ -72,11 +72,11 @@ type JobDetail = {
 };
 
 const SOURCE_LABEL: Record<string, { label: string; cls: string }> = {
-  original: { label: "Real photo", cls: "bg-aurora/15 text-aurora" },
-  parallax: { label: "Real photo + motion", cls: "bg-aurora/15 text-aurora" },
-  gen_image: { label: "AI image", cls: "bg-mist/20 text-mist" },
-  hero_video: { label: "AI motion on real photo", cls: "bg-mist/20 text-mist" },
-  synthetic_scene: { label: "AI-recreated scene", cls: "bg-coral/20 text-peach" }
+  original: { label: "Real photo", cls: "bg-aurora/15 text-forest" },
+  parallax: { label: "Real photo + motion", cls: "bg-aurora/15 text-forest" },
+  gen_image: { label: "AI image", cls: "bg-sand text-slateInk" },
+  hero_video: { label: "AI motion on real photo", cls: "bg-sand text-slateInk" },
+  synthetic_scene: { label: "AI-recreated scene", cls: "bg-[#F6E9DC] text-[#8A5A2B]" }
 };
 
 export function MemoryJobConsole({ jobId }: { jobId: string }) {
@@ -199,32 +199,33 @@ export function MemoryJobConsole({ jobId }: { jobId: string }) {
   }
 
   return (
-    <div className="mx-auto max-w-4xl space-y-8 py-8">
+    <div className="-m-6 min-h-screen bg-canvas p-6 md:-m-8 md:p-8">
+      <div className="mx-auto max-w-3xl space-y-6 py-8">
       <header className="space-y-2">
-        <div className="flex items-center gap-2 text-aurora">
+        <div className="flex items-center gap-2 text-forest">
           <Bot className="h-6 w-6" />
           <span className="text-sm font-semibold uppercase tracking-wide">Travel Autopilot</span>
-          <span className="ml-auto rounded-full border border-white/10 bg-white/10 px-3 py-1 text-xs font-medium text-white/70">
+          <span className="ml-auto rounded-full border border-line bg-sand px-3 py-1 text-xs font-medium text-slateInk">
             {status.replaceAll("_", " ")} · {job?.progress_pct ?? 0}%
           </span>
         </div>
-        <h1 className="text-2xl font-bold text-white">
+        <h1 className="font-display text-[2rem] leading-tight text-ink">
           {storyboard?.title ?? job?.request_text ?? "Loading your trip…"}
         </h1>
         {job?.error && (
-          <p className="flex items-center gap-2 rounded-lg bg-coral/10 p-3 text-sm text-peach">
+          <p className="flex items-center gap-2 rounded-lg bg-[#FBF3E9] p-3 text-sm text-[#8A5A2B]">
             <AlertTriangle className="h-4 w-4 shrink-0" /> {job.error}
           </p>
         )}
       </header>
 
       {/* Live agent feed */}
-      <section className="rounded-2xl border border-white/10 bg-white/[0.04] p-4 backdrop-blur">
-        <h2 className="mb-2 flex items-center gap-2 text-sm font-semibold text-white/75">
-          <Sparkles className="h-4 w-4 text-aurora" /> Live agent activity
+      <section className="rounded-2xl border border-line bg-card p-5">
+        <h2 className="mb-2 flex items-center gap-2 text-sm font-semibold text-slateInk">
+          <Sparkles className="h-4 w-4 text-forest" /> Live agent activity
         </h2>
-        <ul className="max-h-48 space-y-1 overflow-y-auto font-mono text-xs text-white/60">
-          {events.length === 0 && <li className="text-white/35">waiting for events…</li>}
+        <ul className="max-h-48 space-y-1 overflow-y-auto font-mono text-xs text-slateInk">
+          {events.length === 0 && <li className="text-slateInk">waiting for events…</li>}
           {events.slice(-14).map((e, i) => (
             <li key={i} className="truncate">
               {String((e as { event?: string }).event ?? JSON.stringify(e)).slice(0, 120)}
@@ -236,10 +237,10 @@ export function MemoryJobConsole({ jobId }: { jobId: string }) {
       {/* Evidence + the truth boundary — the checkpoint no other travel app has */}
       {claims.length > 0 && (
         <section className="space-y-4">
-          <h2 className="flex items-center gap-2 text-lg font-semibold text-white">
-            <ShieldCheck className="h-5 w-5 text-aurora" /> What your evidence proves
+          <h2 className="flex items-center gap-2 font-display text-[1.35rem] text-ink">
+            <ShieldCheck className="h-5 w-5 text-forest" /> What your evidence proves
             {job?.evidence?.sources_used?.length ? (
-              <span className="text-xs font-normal text-white/45">
+              <span className="text-xs font-normal text-slateInk">
                 read from {job.evidence.sources_used.join(", ")}
               </span>
             ) : null}
@@ -254,28 +255,28 @@ export function MemoryJobConsole({ jobId }: { jobId: string }) {
                   key={c.id}
                   className={`rounded-lg border p-3 ${
                     verified
-                      ? "border-aurora/25 bg-aurora/[0.07]"
+                      ? "border-forest/25 bg-forest/[0.05]"
                       : confirmed
-                        ? "border-aurora/25 bg-aurora/[0.07]"
-                        : "border-coral/30 bg-coral/[0.08]"
+                        ? "border-forest/25 bg-forest/[0.05]"
+                        : "border-[#E4C9A8] bg-[#FBF3E9]"
                   }`}
                 >
                   <div className="flex items-start gap-2">
                     {verified ? (
-                      <BadgeCheck className="mt-0.5 h-4 w-4 shrink-0 text-aurora" />
+                      <BadgeCheck className="mt-0.5 h-4 w-4 shrink-0 text-forest" />
                     ) : (
-                      <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-peach" />
+                      <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-[#8A5A2B]" />
                     )}
                     <div className="min-w-0 flex-1">
-                      <p className="text-sm font-medium text-white/90">{c.text}</p>
-                      <p className="mt-0.5 text-[11px] uppercase tracking-wide text-white/45">
+                      <p className="text-sm font-medium text-slateInk">{c.text}</p>
+                      <p className="mt-0.5 text-[11px] uppercase tracking-wide text-slateInk">
                         {c.status.replaceAll("_", " ")} · confidence {Math.round((c.confidence ?? 0) * 100)}%
                         {c.evidence?.length ? ` · from ${c.evidence.join(", ")}` : ""}
                       </p>
 
                       {c.question && (c.status === "INFERRED" || c.status === "CONTRADICTED") && (
                         <div className="mt-2">
-                          <p className="mb-1.5 text-sm text-white/75">{c.question}</p>
+                          <p className="mb-1.5 text-sm text-slateInk">{c.question}</p>
                           <div className="flex flex-wrap gap-2">
                             {[
                               ["confirmed", "Yes — recreate it, labeled"],
@@ -287,8 +288,8 @@ export function MemoryJobConsole({ jobId }: { jobId: string }) {
                                 onClick={() => setClaimAnswers((a) => ({ ...a, [c.id]: value }))}
                                 className={`rounded-md px-2.5 py-1 text-xs font-medium ${
                                   claimAnswers[c.id] === value
-                                    ? "bg-coral text-night"
-                                    : "bg-white/10 text-peach ring-1 ring-coral/40 hover:bg-white/20"
+                                    ? "bg-forest text-ink"
+                                    : "bg-card text-[#8A5A2B] ring-1 ring-[#E4C9A8] hover:bg-[#F6E9DC]"
                                 }`}
                               >
                                 {label}
@@ -309,13 +310,13 @@ export function MemoryJobConsole({ jobId }: { jobId: string }) {
               <button
                 onClick={submitConsent}
                 disabled={busy || !allClaimsAnswered}
-                className="inline-flex items-center gap-2 rounded-xl bg-coral px-5 py-2.5 font-semibold text-night transition hover:bg-peach disabled:opacity-50"
+                className="inline-flex items-center gap-2 rounded-xl bg-forest px-5 py-3 font-semibold text-ink transition hover:bg-forestDeep disabled:opacity-50"
               >
                 {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
                 Confirm — then plan the story
               </button>
               {!allClaimsAnswered && (
-                <span className="text-xs text-peach">
+                <span className="text-xs text-[#8A5A2B]">
                   Answer each question above. Nothing is recreated without your say-so.
                 </span>
               )}
@@ -327,10 +328,10 @@ export function MemoryJobConsole({ jobId }: { jobId: string }) {
       {/* Storyboard checkpoint */}
       {storyboard && (
         <section className="space-y-4">
-          <h2 className="flex items-center gap-2 text-lg font-semibold text-white">
-            <Clapperboard className="h-5 w-5 text-aurora" /> Storyboard
+          <h2 className="flex items-center gap-2 font-display text-[1.35rem] text-ink">
+            <Clapperboard className="h-5 w-5 text-forest" /> Storyboard
             {status === "awaiting_storyboard_approval" && (
-              <span className="rounded-full bg-coral/20 px-3 py-0.5 text-xs font-medium text-peach">
+              <span className="rounded-full bg-[#F6E9DC] px-3 py-0.5 text-xs font-medium text-[#8A5A2B]">
                 needs your approval
               </span>
             )}
@@ -340,38 +341,38 @@ export function MemoryJobConsole({ jobId }: { jobId: string }) {
               const badge = SOURCE_LABEL[s.source] ?? SOURCE_LABEL.original;
               const engineScene = engine?.scenes?.find((es) => es.idx === s.idx);
               return (
-                <div key={s.idx} className="rounded-2xl border border-white/10 bg-white/[0.05] p-4 transition hover:border-white/20">
+                <div key={s.idx} className="rounded-2xl border border-line bg-card p-4 transition hover:border-forest/25">
                   <div className="mb-2 flex items-center gap-2">
-                    <span className="text-xs font-bold text-white/35">#{s.idx + 1}</span>
+                    <span className="text-xs font-bold text-slateInk">#{s.idx + 1}</span>
                     <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${badge.cls}`}>
                       {badge.label}
                     </span>
-                    <span className="ml-auto text-[11px] text-white/35">{s.durationSec}s</span>
+                    <span className="ml-auto text-[11px] text-slateInk">{s.durationSec}s</span>
                   </div>
-                  <p className="text-sm font-medium text-white/90">“{s.narrationLine}”</p>
-                  <p className="mt-1 truncate text-xs text-white/45">{s.genPrompt ?? s.motionPrompt}</p>
+                  <p className="text-sm font-medium text-slateInk">“{s.narrationLine}”</p>
+                  <p className="mt-1 truncate text-xs text-slateInk">{s.genPrompt ?? s.motionPrompt}</p>
                   {engineScene && (
-                    <p className="mt-2 text-[11px] text-white/45">
+                    <p className="mt-2 text-[11px] text-slateInk">
                       {engineScene.skipped
                         ? "skipped (no consent)"
                         : `${engineScene.attempts.length || "no"} critic-judged attempt${engineScene.attempts.length === 1 ? "" : "s"}`}
                     </p>
                   )}
                   {s.needsConsent && status === "awaiting_storyboard_approval" && (
-                    <div className="mt-3 rounded-lg bg-coral/10 p-2 text-xs">
-                      <p className="mb-1 font-medium text-peach">
+                    <div className="mt-3 rounded-lg bg-[#FBF3E9] p-2 text-xs">
+                      <p className="mb-1 font-medium text-[#8A5A2B]">
                         This moment has no photo evidence. Recreate it with AI (clearly labeled)?
                       </p>
                       <div className="flex gap-2">
                         <button
                           onClick={() => setConsents((c) => ({ ...c, [s.idx]: true }))}
-                          className={`rounded-md px-2 py-1 font-medium ${consents[s.idx] === true ? "bg-coral text-night" : "bg-white/10 text-peach ring-1 ring-coral/40"}`}
+                          className={`rounded-md px-2 py-1 font-medium ${consents[s.idx] === true ? "bg-forest text-ink" : "bg-card text-[#8A5A2B] ring-1 ring-[#E4C9A8]"}`}
                         >
                           Recreate &amp; label
                         </button>
                         <button
                           onClick={() => setConsents((c) => ({ ...c, [s.idx]: false }))}
-                          className={`rounded-md px-2 py-1 font-medium ${consents[s.idx] === false ? "bg-white/25 text-white" : "bg-white/10 text-white/70 ring-1 ring-white/20"}`}
+                          className={`rounded-md px-2 py-1 font-medium ${consents[s.idx] === false ? "bg-ink text-ink" : "bg-card text-slateInk ring-1 ring-line"}`}
                         >
                           Leave it out
                         </button>
@@ -388,7 +389,7 @@ export function MemoryJobConsole({ jobId }: { jobId: string }) {
               <button
                 onClick={() => decideStoryboard("approved")}
                 disabled={busy || !allConsentsAnswered}
-                className="inline-flex items-center gap-2 rounded-xl bg-coral px-5 py-2.5 font-semibold text-night transition hover:bg-peach disabled:opacity-50"
+                className="inline-flex items-center gap-2 rounded-xl bg-forest px-5 py-3 font-semibold text-ink transition hover:bg-forestDeep disabled:opacity-50"
               >
                 {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
                 Approve — start generating
@@ -396,12 +397,12 @@ export function MemoryJobConsole({ jobId }: { jobId: string }) {
               <button
                 onClick={() => decideStoryboard("rejected")}
                 disabled={busy}
-                className="inline-flex items-center gap-2 rounded-xl border border-white/20 px-4 py-2.5 text-white/70 hover:bg-white/10"
+                className="inline-flex items-center gap-2 rounded-xl border border-line px-4 py-3 text-slateInk hover:bg-sand"
               >
                 <XCircle className="h-4 w-4" /> Reject
               </button>
               {!allConsentsAnswered && (
-                <span className="text-xs text-peach">Answer the consent question on each amber scene first.</span>
+                <span className="text-xs text-[#8A5A2B]">Answer the consent question on each amber scene first.</span>
               )}
             </div>
           )}
@@ -410,14 +411,14 @@ export function MemoryJobConsole({ jobId }: { jobId: string }) {
 
       {/* Final approval + provenance */}
       {(status === "awaiting_final_approval" || status === "delivered") && (
-        <section className="space-y-4 rounded-2xl border border-aurora/25 bg-aurora/[0.06] p-5">
-          <h2 className="flex items-center gap-2 text-lg font-semibold text-white">
-            <Film className="h-5 w-5 text-aurora" /> Your sealed film
+        <section className="space-y-4 rounded-2xl border border-forest/20 bg-forest/[0.04] p-6">
+          <h2 className="flex items-center gap-2 font-display text-[1.35rem] text-ink">
+            <Film className="h-5 w-5 text-forest" /> Your sealed film
           </h2>
           {engine?.stored && (
-            <p className="flex items-center gap-2 text-sm text-white/75">
-              <Lock className="h-4 w-4 text-aurora" />
-              Provenance record: <code className="rounded bg-black/40 px-1.5 py-0.5 text-xs text-aurora">{engine.stored}</code>
+            <p className="flex items-center gap-2 text-sm text-slateInk">
+              <Lock className="h-4 w-4 text-forest" />
+              Provenance record: <code className="rounded bg-sand px-1.5 py-0.5 text-xs text-forest">{engine.stored}</code>
             </p>
           )}
           {engine?.verification && (
@@ -425,12 +426,12 @@ export function MemoryJobConsole({ jobId }: { jobId: string }) {
               {Object.entries(engine.verification.checks).map(([name, c]) => (
                 <p key={name} className="flex items-center gap-2 text-sm">
                   {c.pass ? (
-                    <BadgeCheck className="h-4 w-4 text-aurora" />
+                    <BadgeCheck className="h-4 w-4 text-forest" />
                   ) : (
-                    <XCircle className="h-4 w-4 text-coral" />
+                    <XCircle className="h-4 w-4 text-[#B4462F]" />
                   )}
-                  <span className="font-medium text-white/75">{name.replaceAll("_", " ")}:</span>
-                  <span className="text-white/45">{c.detail}</span>
+                  <span className="font-medium text-slateInk">{name.replaceAll("_", " ")}:</span>
+                  <span className="text-slateInk">{c.detail}</span>
                 </p>
               ))}
             </div>
@@ -440,7 +441,7 @@ export function MemoryJobConsole({ jobId }: { jobId: string }) {
               <button
                 onClick={() => decideFinal("approved")}
                 disabled={busy}
-                className="inline-flex items-center gap-2 rounded-xl bg-coral px-5 py-2.5 font-semibold text-night hover:bg-peach disabled:opacity-50"
+                className="inline-flex items-center gap-2 rounded-xl bg-forest px-5 py-3 font-semibold text-ink hover:bg-forestDeep disabled:opacity-50"
               >
                 {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
                 Approve &amp; deliver
@@ -448,7 +449,7 @@ export function MemoryJobConsole({ jobId }: { jobId: string }) {
               <button
                 onClick={() => decideFinal("rejected")}
                 disabled={busy}
-                className="rounded-xl border border-white/20 px-4 py-2.5 text-white/70 hover:bg-white/10"
+                className="rounded-xl border border-line px-4 py-3 text-slateInk hover:bg-sand"
               >
                 Request changes
               </button>
@@ -459,14 +460,14 @@ export function MemoryJobConsole({ jobId }: { jobId: string }) {
               <button
                 onClick={runVerify}
                 disabled={busy}
-                className="inline-flex items-center gap-2 rounded-xl bg-white px-5 py-2.5 font-semibold text-night hover:bg-parchment disabled:opacity-50"
+                className="inline-flex items-center gap-2 rounded-xl bg-ink px-5 py-3 font-semibold text-ink hover:bg-forestDeep disabled:opacity-50"
               >
                 {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShieldCheck className="h-4 w-4" />}
                 Verify this film now
               </button>
               {verify && (
                 <div
-                  className={`rounded-lg p-3 text-sm ${verify.verified ? "bg-aurora/15 text-aurora" : "bg-coral/15 text-peach"}`}
+                  className={`rounded-lg p-3 text-sm ${verify.verified ? "bg-aurora/15 text-forest" : "bg-[#FBF3E9] text-[#B4462F]"}`}
                 >
                   {verify.verified
                     ? "✓ All three independent checks passed — this film is exactly what was sealed."
@@ -478,7 +479,8 @@ export function MemoryJobConsole({ jobId }: { jobId: string }) {
         </section>
       )}
 
-      {error && <p className="text-sm text-coral">{error}</p>}
+        {error && <p className="text-sm text-[#B4462F]">{error}</p>}
+      </div>
     </div>
   );
 }

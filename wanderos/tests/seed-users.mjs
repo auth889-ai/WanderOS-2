@@ -39,8 +39,14 @@ const users = [
 ];
 
 const url = new URL(env.DATABASE_URL);
+// Match lib/db/pool.ts: only negotiate TLS when the URL asks for it. A local
+// Postgres has no SSL and rejects the handshake outright.
+const useSsl = url.searchParams.has("sslmode") || !/^(localhost|127\.0\.0\.1)$/.test(url.hostname);
 url.searchParams.delete("sslmode");
-const pool = new pg.Pool({ connectionString: url.toString(), ssl: { rejectUnauthorized: false } });
+const pool = new pg.Pool({
+  connectionString: url.toString(),
+  ssl: useSsl ? { rejectUnauthorized: false } : undefined
+});
 
 for (const u of users) {
   await pool.query(
