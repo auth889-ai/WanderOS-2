@@ -109,6 +109,9 @@ def _run(job: dict) -> None:
             "scenes": job["scenes"],
             "title": storyboard.get("title"),
             "consents": consents,
+            # The Genblaze manifest above covers one run; the film is the product of
+            # many. This is the aggregate that actually describes what was published.
+            "experience_manifest": _experience_manifest(job, film),
         })
         job["publish_record"] = record
         verification = verify_film(Path(record["sealed_path"]), record)
@@ -123,6 +126,72 @@ def _run(job: dict) -> None:
     except Exception as exc:
         _set(job, "failed", error=f"{type(exc).__name__}: {exc}",
              trace=traceback.format_exc()[-1500:])
+
+
+def _experience_manifest(job: dict, film: Path) -> dict:
+    """The aggregate lineage of the published film.
+
+    A single Genblaze run-manifest describes one pipeline run. A film is the
+    product of many: every scene attempt (including the REJECTED ones), every
+    critic verdict, the consent decisions, and the composed output. Signing only
+    the seed run would attest to something that is not the film — so this
+    aggregate is what the publish record carries, with each attempt referenced by
+    its own recorded lineage path.
+    """
+    scenes: list[dict] = []
+    for scene in job.get("scenes", []):
+        attempts = scene.get("attempts", []) or []
+        scenes.append({
+            "idx": scene["idx"],
+            "synthetic": scene.get("synthetic"),
+            "skipped": scene.get("skipped"),
+            "attempts": [
+                {
+                    "attempt": a.get("attempt"),
+                    "model": a.get("model"),
+                    "decision": a.get("decision"),
+                    "overall": a.get("overall"),
+                    "critic": a.get("critic"),
+                    "violations": a.get("violations", []),
+                    # every attempt, accepted or not, is addressable in B2
+                    "lineage": (f"trips/{job['trip_id']}/generations/scenes/"
+                                f"scene-{scene['idx']}/attempt-{a.get('attempt')}.json"),
+                }
+                for a in attempts
+            ],
+            "selected_attempt": attempts[-1].get("attempt") if attempts else None,
+            "rejected_attempts": sum(1 for a in attempts if a.get("decision") == "REJECT"),
+        })
+    return {
+        "schema": "wanderos.experience-manifest/1",
+        "job_id": job["job_id"],
+        "trip_id": job["trip_id"],
+        "title": (job.get("storyboard") or {}).get("title"),
+        "consents": job.get("consents", {}),
+        "scenes": scenes,
+        "film_sha256": _sha256_file(film),
+        "verdicts_index": f"trips/{job['trip_id']}/evaluations/{job['job_id']}/",
+        "provider_chains": _chains(),
+    }
+
+
+def _sha256_file(path: Path) -> str:
+    import hashlib
+
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _chains() -> dict:
+    try:
+        from app.repo.provider_catalog import chain_summary
+
+        return chain_summary()
+    except Exception:
+        return {}
 
 
 def _seed_run(job_id: str):

@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from cryptography.hazmat.primitives import serialization
@@ -42,6 +43,43 @@ def _load_public() -> Ed25519PublicKey:
     return serialization.load_pem_public_key(pub)  # type: ignore[return-value]
 
 
+def _store_locked(key: str, body: bytes) -> dict:
+    """Write the publish record under an EXPLICIT Object Lock retention.
+
+    Enabling Object Lock on a bucket does not by itself make an object immutable
+    — a retention mode and retain-until date must be applied, either as a bucket
+    default or per object. Relying on the bucket default means the guarantee is
+    invisible in the code and silently lost if the bucket is ever reconfigured,
+    so the retention is set per object here and the effective lock is read back
+    and recorded. If the key lacks retention permission the write still succeeds
+    and the record says plainly that it is NOT locked.
+    """
+    import boto3
+
+    retain_until = datetime.now(timezone.utc) + timedelta(days=settings.object_lock_days)
+    s3 = boto3.client(
+        "s3", endpoint_url=f"https://s3.{settings.b2_region}.backblazeb2.com",
+        aws_access_key_id=settings.b2_key_id, aws_secret_access_key=settings.b2_application_key,
+    )
+    bucket = settings.b2_bucket_provenance
+    try:
+        s3.put_object(
+            Bucket=bucket, Key=key, Body=body, ContentType="application/json",
+            ObjectLockMode="COMPLIANCE", ObjectLockRetainUntilDate=retain_until,
+        )
+    except Exception:
+        s3.put_object(Bucket=bucket, Key=key, Body=body, ContentType="application/json")
+        return {"stored": f"b2://{bucket}/{key}",
+                "retention": "NONE — write succeeded but retention could not be applied"}
+
+    try:
+        actual = s3.get_object_retention(Bucket=bucket, Key=key)["Retention"]
+        detail = f"{actual['Mode']} until {actual['RetainUntilDate'].isoformat()}"
+    except Exception:
+        detail = f"COMPLIANCE until {retain_until.isoformat()} (read-back unavailable)"
+    return {"stored": f"b2://{bucket}/{key}", "retention": detail}
+
+
 def seal_film(film_raw: Path, manifest: Manifest, extra: dict) -> dict:
     """Returns the publish record; writes sealed file next to raw as *.sealed.mp4."""
     raw_sha = _sha256(film_raw)
@@ -59,15 +97,8 @@ def seal_film(film_raw: Path, manifest: Manifest, extra: dict) -> dict:
     record = {"doc": doc, "signature": sig, "sealed_sha256": _sha256(sealed), "sealed_path": str(sealed)}
 
     if settings.b2_configured:
-        from genblaze_s3 import S3StorageBackend
-
-        backend = S3StorageBackend.for_backblaze(
-            settings.b2_bucket_provenance, region=settings.b2_region,
-            key_id=settings.b2_key_id, app_key=settings.b2_application_key,
-        )
         key = f"manifests/{extra.get('job_id', 'unknown')}-{int(time.time())}.json"
-        backend.put(key, json.dumps(record).encode(), content_type="application/json")
-        record["stored"] = f"b2://{settings.b2_bucket_provenance}/{key} (Object Lock bucket)"
+        record.update(_store_locked(key, json.dumps(record).encode()))
     else:
         LEDGER_DIR.mkdir(exist_ok=True)
         p = LEDGER_DIR / f"{extra.get('job_id', 'unknown')}-{int(time.time())}.json"

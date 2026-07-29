@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     b2_bucket_provenance: str = "wanderos-provenance"
     b2_bucket_intermediate: str = "wanderos-intermediate"
     b2_bucket_logs: str = "wanderos-logs"
+    object_lock_days: int = 30  # COMPLIANCE retention applied per publish record
 
     # Providers — each configured key becomes a live link in the failover chain
     gmi_api_key: str = ""
