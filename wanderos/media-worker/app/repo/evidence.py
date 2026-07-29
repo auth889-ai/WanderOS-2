@@ -1,21 +1,27 @@
-"""Multi-modal evidence extraction — the layer that makes claims checkable.
+"""Multi-modal evidence extraction — every capability has a path that works today.
 
 EXIF timestamps alone cannot tell you whether the traveler actually watched the
-sunset. Three AWS services turn the raw pile into facts a reasoner can weigh:
+sunset. Three sources answer three different questions:
 
-  Textract    booking PDFs / itineraries -> the trip as *planned*
-  Transcribe  voice notes                -> the trip as *remembered*
-  Rekognition photos                     -> the trip as *photographed*
+  documents  booking PDFs / itineraries -> the trip as *planned*
+  voice      voice notes                -> the trip as *remembered*
+  photos     photo content              -> the trip as *photographed*
 
 Planned-but-not-photographed is exactly the gap the consent flow exists for, and
-you cannot detect it without reading all three sources.
+you cannot detect it without reading all three.
 
-Every extractor degrades to ``available=False`` with the reason attached rather
-than raising, so a locked-down AWS account produces an honest partial timeline
-instead of a failed job.
+Each extractor is a chain, in the same spirit as the provider chain: the first
+route that works serves, and the route that served is recorded. Crucially the
+LAST route of the document chain is local (pypdf) — so evidence extraction never
+depends on a cloud entitlement being granted.
+
+  documents  pypdf (local, always)      -> AWS Textract (richer, when granted)
+  voice      OpenAI Whisper             -> AWS Transcribe
+  photos     OpenAI vision              -> AWS Rekognition
 """
 from __future__ import annotations
 
+import io
 import json
 import time
 import urllib.request
@@ -26,7 +32,7 @@ from app.config.settings import settings
 
 
 @lru_cache(maxsize=8)
-def _client(service: str, region: str | None = None):
+def _aws(service: str, region: str | None = None):
     import boto3
 
     return boto3.Session(
@@ -36,104 +42,163 @@ def _client(service: str, region: str | None = None):
     ).client(service)
 
 
-def _fetch(url: str, limit: int = 12_000_000) -> bytes | None:
+@lru_cache(maxsize=1)
+def _openai():
+    from openai import OpenAI
+
+    return OpenAI(api_key=settings.openai_api_key)
+
+
+def _fetch(url: str, limit: int = 25_000_000) -> bytes | None:
     try:
+        if url.startswith("data:"):
+            import base64
+
+            return base64.b64decode(url.split(",", 1)[1])
         with urllib.request.urlopen(url, timeout=120) as r:
             return r.read(limit)
     except Exception:
         return None
 
 
-def _unavailable(reason: str) -> dict[str, Any]:
+def _fail(reason: str) -> dict[str, Any]:
     return {"available": False, "reason": reason[:200]}
 
 
 # ── Documents: the trip as planned ──────────────────────────────────────────
 
 def read_document(url: str) -> dict[str, Any]:
-    """Textract a booking PDF / itinerary image into lines of text."""
+    """Local pypdf first — no entitlement, no network, no cost. Textract adds
+    layout/forms for scans, so it is tried only when pypdf yields nothing."""
     data = _fetch(url)
     if data is None:
-        return _unavailable("document unreachable")
+        return _fail("document unreachable")
+
+    if data[:5] == b"%PDF-":
+        try:
+            import pypdf
+
+            reader = pypdf.PdfReader(io.BytesIO(data))
+            pages = [(p.extract_text() or "").strip() for p in reader.pages]
+            lines = [ln.strip() for page in pages for ln in page.splitlines() if ln.strip()]
+            if lines:
+                return {"available": True, "source": "pypdf (local)", "lines": lines,
+                        "pages": len(pages), "text": "\n".join(lines)[:20000]}
+        except Exception:
+            pass  # fall through to Textract for scanned/image PDFs
+
     try:
-        blocks = _client("textract").detect_document_text(Document={"Bytes": data})["Blocks"]
+        blocks = _aws("textract").detect_document_text(Document={"Bytes": data})["Blocks"]
+        lines = [b["Text"] for b in blocks if b["BlockType"] == "LINE" and b.get("Text")]
+        return {"available": True, "source": "aws-textract", "lines": lines,
+                "text": "\n".join(lines)[:20000]}
     except Exception as exc:
-        return _unavailable(f"textract denied: {type(exc).__name__}")
-    lines = [b["Text"] for b in blocks if b["BlockType"] == "LINE" and b.get("Text")]
-    return {"available": True, "source": "aws-textract", "lines": lines,
-            "text": "\n".join(lines)[:20000]}
+        return _fail(f"no text extracted (pypdf empty; textract: {type(exc).__name__})")
 
 
 # ── Voice: the trip as remembered ───────────────────────────────────────────
 
-def transcribe_voice(url: str, *, job_name: str, bucket: str | None = None) -> dict[str, Any]:
-    """Amazon Transcribe. Needs an S3 staging bucket — Transcribe reads from S3."""
-    bucket = bucket or settings.aws_staging_bucket
-    if not bucket:
-        return _unavailable("no S3 staging bucket configured for Transcribe")
+def transcribe_voice(url: str, *, job_name: str) -> dict[str, Any]:
+    """OpenAI Whisper first: one synchronous call, no S3 staging required.
+    AWS Transcribe is the fallback and needs a staging bucket."""
     data = _fetch(url)
     if data is None:
-        return _unavailable("voice note unreachable")
+        return _fail("voice note unreachable")
 
-    key = f"voice/{job_name}.mp3"
+    if settings.openai_api_key:
+        try:
+            buf = io.BytesIO(data)
+            buf.name = f"{job_name}.mp3"
+            result = _openai().audio.transcriptions.create(model="whisper-1", file=buf)
+            return {"available": True, "source": "openai-whisper", "text": result.text[:20000]}
+        except Exception:
+            pass
+
+    bucket = settings.aws_staging_bucket
+    if not bucket:
+        return _fail("whisper unavailable and no S3 staging bucket for Transcribe")
     try:
-        _client("s3").put_object(Bucket=bucket, Key=key, Body=data)
-        tr = _client("transcribe")
-        tr.start_transcription_job(
+        key = f"voice/{job_name}.mp3"
+        _aws("s3").put_object(Bucket=bucket, Key=key, Body=data)
+        _aws("transcribe").start_transcription_job(
             TranscriptionJobName=job_name,
             Media={"MediaFileUri": f"s3://{bucket}/{key}"},
-            MediaFormat="mp3",
-            IdentifyLanguage=True,
+            MediaFormat="mp3", IdentifyLanguage=True,
         )
     except Exception as exc:
-        return _unavailable(f"transcribe start failed: {type(exc).__name__}")
+        return _fail(f"transcribe start failed: {type(exc).__name__}")
 
     deadline = time.monotonic() + 300
     while time.monotonic() < deadline:
         try:
-            job = _client("transcribe").get_transcription_job(
+            job = _aws("transcribe").get_transcription_job(
                 TranscriptionJobName=job_name)["TranscriptionJob"]
         except Exception as exc:
-            return _unavailable(f"transcribe poll failed: {type(exc).__name__}")
+            return _fail(f"transcribe poll failed: {type(exc).__name__}")
         status = job["TranscriptionJobStatus"]
         if status == "COMPLETED":
             body = _fetch(job["Transcript"]["TranscriptFileUri"])
             if body is None:
-                return _unavailable("transcript unreachable")
+                return _fail("transcript unreachable")
             payload = json.loads(body)
             return {"available": True, "source": "aws-transcribe",
-                    "text": payload["results"]["transcripts"][0]["transcript"][:20000],
-                    "language": job.get("LanguageCode")}
+                    "text": payload["results"]["transcripts"][0]["transcript"][:20000]}
         if status == "FAILED":
-            return _unavailable(job.get("FailureReason", "transcription failed"))
+            return _fail(job.get("FailureReason", "transcription failed"))
         time.sleep(5)
-    return _unavailable("transcription timed out")
+    return _fail("transcription timed out")
 
 
 # ── Photos: the trip as photographed ────────────────────────────────────────
 
-def label_photo(url: str, *, min_confidence: float = 75.0) -> dict[str, Any]:
-    """Rekognition labels + face count — what a photo can actually attest to."""
+_VISION_PROMPT = (
+    "List what this travel photo actually shows, as JSON: "
+    '{"labels":[{"name":"...","confidence":0-100}],"people":<count>,'
+    '"setting":"...","time_of_day":"morning|midday|afternoon|sunset|night|unknown"}. '
+    "Only describe what is visibly present. Do not guess a location you cannot see."
+)
+
+
+def label_photo(url: str) -> dict[str, Any]:
+    """OpenAI vision first — richer than label detection (it reads setting and
+    time of day, which is what gap detection actually needs)."""
+    if settings.openai_api_key:
+        try:
+            response = _openai().chat.completions.create(
+                model="gpt-4o-mini",
+                max_tokens=400,
+                response_format={"type": "json_object"},
+                messages=[{"role": "user", "content": [
+                    {"type": "text", "text": _VISION_PROMPT},
+                    {"type": "image_url", "image_url": {"url": url}},
+                ]}],
+            )
+            payload = json.loads(response.choices[0].message.content)
+            return {"available": True, "source": "openai-vision",
+                    "labels": payload.get("labels", [])[:20],
+                    "people": payload.get("people", 0),
+                    "setting": payload.get("setting"),
+                    "time_of_day": payload.get("time_of_day")}
+        except Exception:
+            pass
+
     data = _fetch(url, limit=5_000_000)
     if data is None:
-        return _unavailable("photo unreachable")
+        return _fail("photo unreachable")
     try:
-        rk = _client("rekognition")
-        labels = rk.detect_labels(Image={"Bytes": data}, MaxLabels=20,
-                                  MinConfidence=min_confidence)["Labels"]
+        rk = _aws("rekognition")
+        labels = rk.detect_labels(Image={"Bytes": data}, MaxLabels=20, MinConfidence=75.0)["Labels"]
         faces = rk.detect_faces(Image={"Bytes": data})["FaceDetails"]
+        return {"available": True, "source": "aws-rekognition",
+                "labels": [{"name": l["Name"], "confidence": round(l["Confidence"], 1)}
+                           for l in labels],
+                "people": len(faces)}
     except Exception as exc:
-        return _unavailable(f"rekognition denied: {type(exc).__name__}")
-    return {
-        "available": True,
-        "source": "aws-rekognition",
-        "labels": [{"name": l["Name"], "confidence": round(l["Confidence"], 1)} for l in labels],
-        "people": len(faces),
-    }
+        return _fail(f"no vision route (openai failed; rekognition: {type(exc).__name__})")
 
 
 def extract_all(assets: list[dict], *, job_id: str) -> dict[str, Any]:
-    """Run the right extractor per asset kind. Returns a partial-tolerant bundle.
+    """Run the right extractor per asset kind. Partial-tolerant by design.
 
     ``assets`` items: {"key": str, "url": str, "kind": "photo"|"document"|"voice"}
     """
@@ -143,17 +208,18 @@ def extract_all(assets: list[dict], *, job_id: str) -> dict[str, Any]:
         if not url:
             continue
         if kind == "document":
-            result = read_document(url)
-            bucket = bundle["documents"]
+            result, target = read_document(url), bundle["documents"]
         elif kind == "voice":
-            result = transcribe_voice(url, job_name=f"{job_id}-{i}")
-            bucket = bundle["voice"]
+            result, target = transcribe_voice(url, job_name=f"{job_id}-{i}"), bundle["voice"]
         else:
-            result = label_photo(url)
-            bucket = bundle["photos"]
+            result, target = label_photo(url), bundle["photos"]
         result["key"] = key
-        bucket.append(result)
+        target.append(result)
         if not result.get("available"):
             bundle["degraded"].append({"key": key, "kind": kind, "reason": result.get("reason")})
     bundle["complete"] = not bundle["degraded"]
+    bundle["sources_used"] = sorted({
+        r["source"] for group in ("documents", "voice", "photos")
+        for r in bundle[group] if r.get("available")
+    })
     return bundle

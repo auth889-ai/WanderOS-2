@@ -40,13 +40,18 @@ def _bedrock():
     ).client("bedrock-runtime")
 
 
+_RESOLVED_MODEL: str | None = None
+
+
 @lru_cache(maxsize=1)
 def route() -> str:
     """Which Claude route works: 'bedrock' | 'anthropic' | 'none'.
 
-    Probed once with a 1-token call so a locked-down account degrades quietly
-    instead of failing every scene.
+    Probed once with a 1-token call per candidate — an account may be entitled to
+    Sonnet but not Opus, so the first model that actually *answers* is the one we
+    keep. Probing beats assuming: a model listed as ACTIVE can still be denied.
     """
+    global _RESOLVED_MODEL
     if settings.aws_access_key_id and settings.aws_secret_access_key:
         for model in BEDROCK_MODELS:
             try:
@@ -58,8 +63,7 @@ def route() -> str:
                         "messages": [{"role": "user", "content": "hi"}],
                     }),
                 )
-                _bedrock_model.cache_clear()
-                _bedrock_model(model)  # memoize the winner
+                _RESOLVED_MODEL = model
                 return "bedrock"
             except Exception:
                 continue
@@ -68,9 +72,10 @@ def route() -> str:
     return "none"
 
 
-@lru_cache(maxsize=1)
-def _bedrock_model(model: str = BEDROCK_MODELS[0]) -> str:
-    return model
+def _bedrock_model() -> str:
+    if _RESOLVED_MODEL is None:
+        route()  # resolve on first use
+    return _RESOLVED_MODEL or BEDROCK_MODELS[-1]
 
 
 def describe() -> str:
