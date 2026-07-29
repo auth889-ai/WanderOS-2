@@ -11,9 +11,13 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
 
   return (
     <main className="relative min-h-screen overflow-hidden text-[#17211f] [color-scheme:light]">
+      {/* The 61MB 4K source takes a moment on first load, and *.mp4 is gitignored
+          so a fresh clone has no video at all. The poster keeps the hero looking
+          finished either way instead of rendering as blank white. */}
       <video
         className="absolute inset-0 h-full w-full object-cover brightness-[1.05] contrast-[1.08] saturate-[1.18]"
         src="/videos/paris-hero.mp4"
+        poster="/images/traveler-dashboard/city.jpg"
         autoPlay
         muted
         loop
