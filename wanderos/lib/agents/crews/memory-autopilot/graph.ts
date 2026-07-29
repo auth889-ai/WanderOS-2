@@ -364,6 +364,31 @@ async function deliver(state: typeof State.State) {
   return {};
 }
 
+// ── Node: cancelled — the traveller said no. Terminal, and nothing generated.
+async function cancelled(state: typeof State.State) {
+  await updateMemoryJob(state.jobId, { status: "failed", error: "cancelled by traveller" });
+  await progress(state.jobId, "job.cancelled", "failed", 100);
+  return {};
+}
+
+/** Where a storyboard decision leads. Rejection must never reach generation. */
+function afterStoryboard(state: typeof State.State): "generate_film" | "plan_story" | "cancelled" {
+  const decision = state.approval?.decision;
+  if (decision === "rejected") return "cancelled";
+  // "revision_requested" sends the planner back around with the notes, rather
+  // than making the traveller start the whole trip again.
+  if (decision === "revision_requested") return "plan_story";
+  return "generate_film"; // approved | edited
+}
+
+/** Where a final decision leads. Only an explicit approval delivers. */
+function afterFinal(state: typeof State.State): "deliver" | "generate_film" | "cancelled" {
+  const decision = state.finalApproval?.decision;
+  if (decision === "rejected") return "cancelled";
+  if (decision === "revision_requested") return "generate_film";
+  return "deliver";
+}
+
 export function buildAutopilotGraph(checkpointer?: PostgresSaver | MemorySaver) {
   const graph = new StateGraph(State)
     .addNode("intake", intake)
@@ -376,6 +401,7 @@ export function buildAutopilotGraph(checkpointer?: PostgresSaver | MemorySaver) 
     .addNode("generate_film", generateFilm)
     .addNode("final_approval", finalApproval)
     .addNode("deliver", deliver)
+    .addNode("cancelled", cancelled)
     .addEdge("__start__", "intake")
     .addEdge("intake", "understand")
     // Evidence runs AFTER the timeline so claim classification can weigh
@@ -385,10 +411,23 @@ export function buildAutopilotGraph(checkpointer?: PostgresSaver | MemorySaver) 
     .addEdge("consent_checkpoint", "detect_gaps")
     .addEdge("detect_gaps", "plan_story")
     .addEdge("plan_story", "storyboard_approval")
-    .addEdge("storyboard_approval", "generate_film")
+    // The human decisions MUST route. With unconditional edges a rejected
+    // storyboard still ran generation — which would have burned provider spend
+    // on work the traveller explicitly refused, and broken the core promise
+    // that nothing is generated without approval.
+    .addConditionalEdges("storyboard_approval", afterStoryboard, {
+      generate_film: "generate_film",
+      plan_story: "plan_story",
+      cancelled: "cancelled"
+    })
     .addEdge("generate_film", "final_approval")
-    .addEdge("final_approval", "deliver")
-    .addEdge("deliver", "__end__");
+    .addConditionalEdges("final_approval", afterFinal, {
+      deliver: "deliver",
+      generate_film: "generate_film",
+      cancelled: "cancelled"
+    })
+    .addEdge("deliver", "__end__")
+    .addEdge("cancelled", "__end__");
   return graph.compile({ checkpointer: checkpointer ?? new MemorySaver() });
 }
 
