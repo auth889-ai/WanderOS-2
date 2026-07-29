@@ -39,6 +39,7 @@ class Settings(BaseSettings):
     aws_region: str = "us-east-1"
     bedrock_region: str = "us-west-2"
     polly_voice: str = "Joanna"
+    aws_staging_bucket: str = ""  # S3 bucket Transcribe/Luma read+write (async APIs need S3)
 
     # Claude critic (Experience Director's quality gate)
     anthropic_api_key: str = ""

@@ -83,7 +83,9 @@ def _rubric_fallback(scene: dict, media: Path | None) -> dict:
 
 def critique_scene(scene: dict, media: Path | None, *, attempt: int = 1) -> dict:
     """Score one generated scene. `media` = local path of the clip (or image)."""
-    if not settings.anthropic_api_key:
+    from app.repo.claude import ClaudeUnavailable, complete, describe, route
+
+    if route() == "none":
         return _rubric_fallback(scene, media)
 
     frame = media
@@ -92,10 +94,6 @@ def critique_scene(scene: dict, media: Path | None, *, attempt: int = 1) -> dict
     if frame is None or not frame.exists():
         return _rubric_fallback(scene, media)
 
-    import anthropic
-
-    client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
-    b64 = base64.standard_b64encode(frame.read_bytes()).decode()
     prompt = f"""You are the visual critic for a travel memory film. Judge this frame of a generated scene.
 
 Scene intent:
@@ -111,25 +109,15 @@ prompt_patch (what to change), or SWITCH_MODEL if the failure looks model-specif
 overall = your holistic score, not a mean."""
 
     try:
-        response = client.messages.create(
-            model=settings.critic_model,
-            max_tokens=2048,
-            output_config={"effort": "low",
-                           "format": {"type": "json_schema", "schema": VERDICT_SCHEMA}},
-            messages=[{"role": "user", "content": [
-                {"type": "image",
-                 "source": {"type": "base64", "media_type": "image/jpeg", "data": b64}},
-                {"type": "text", "text": prompt},
-            ]}],
-        )
-        if response.stop_reason == "refusal":
-            v = _rubric_fallback(scene, media)
-            v["critic"] = f"{settings.critic_model} (refused — rubric fallback applied)"
-            return v
-        verdict = json.loads(response.content[0].text)
-        verdict["critic"] = settings.critic_model
+        verdict = complete(prompt, image_jpeg=frame.read_bytes(),
+                           schema=VERDICT_SCHEMA, max_tokens=2048)
+        verdict["critic"] = describe()
         return verdict
-    except Exception as exc:  # network/auth — degrade honestly, never block the film
+    except ClaudeUnavailable as exc:
+        v = _rubric_fallback(scene, media)
+        v["critic"] = f"rubric-fallback ({exc})"
+        return v
+    except Exception as exc:  # network/parse — degrade honestly, never block the film
         v = _rubric_fallback(scene, media)
         v["critic"] = f"rubric-fallback (claude error: {type(exc).__name__})"
         return v

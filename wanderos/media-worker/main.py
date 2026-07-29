@@ -58,7 +58,64 @@ def _summarize(result) -> dict:
 
 @app.get("/health")
 def health():
-    return {"ok": True, "tier": settings.pipeline_tier, "b2_configured": settings.b2_configured}
+    """Judge-facing capability report — every claim on this page is probed live."""
+    from app.repo.claude import describe as claude_route
+    from app.repo.provider_catalog import chain_summary
+
+    return {
+        "ok": True,
+        "tier": settings.pipeline_tier,
+        "b2_configured": settings.b2_configured,
+        "reasoner": claude_route(),
+        "provider_chains": chain_summary(),
+    }
+
+
+# ── Evidence + truth model (the consent gate) ──
+
+class EvidenceReq(BaseModel):
+    job_id: str
+    assets: list[dict]  # [{key, url, kind: photo|document|voice}]
+    timeline: dict | None = None
+
+
+@app.post("/evidence/classify")
+def evidence_classify(req: EvidenceReq):
+    """Extract multi-modal evidence, then classify every claim by provable status.
+
+    Returns the consent questions the traveler must answer before any moment they
+    did not photograph can be recreated.
+    """
+    from app.repo.evidence import extract_all
+    from app.repo.truth import classify, consent_questions
+
+    bundle = extract_all(req.assets, job_id=req.job_id)
+    result = classify(bundle, req.timeline)
+    return {
+        "evidence": bundle,
+        "claims": result["claims"],
+        "classifier": result["classifier"],
+        "degraded": result["degraded"],
+        "consent_questions": consent_questions(result["claims"]),
+    }
+
+
+class ConsentReq(BaseModel):
+    claims: list[dict]
+    decisions: dict[str, str]  # claim id -> confirmed | denied | unsure
+
+
+@app.post("/evidence/consent")
+def evidence_consent(req: ConsentReq):
+    """Fold the traveler's answers in and report what may now be generated."""
+    from app.repo.truth import apply_consent, disclosure_required, may_generate
+
+    claims = apply_consent(req.claims, req.decisions)
+    return {
+        "claims": claims,
+        "generatable": [c["id"] for c in claims if may_generate(c)],
+        "requires_disclosure": [c["id"] for c in claims if disclosure_required(c)],
+    }
 
 
 @app.post("/pipelines/enhance")
