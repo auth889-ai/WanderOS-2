@@ -23,6 +23,11 @@ class Settings(BaseSettings):
     b2_bucket_provenance: str = "wanderos-provenance"
     b2_bucket_intermediate: str = "wanderos-intermediate"
     b2_bucket_logs: str = "wanderos-logs"
+    parquet_dir: str = "/tmp/wanderos/parquet"   # queryable run history (ParquetSink)
+    otel_enabled: bool = False                   # add an OTelTracer rung when true
+    step_max_retries: int = 2                    # resumes a prediction, never re-submits
+    step_timeout_sec: int = 600                  # one provider step
+    pipeline_timeout_sec: int = 900              # whole run — bounds a stuck poll
     object_lock_days: int = 30  # COMPLIANCE retention applied per publish record
 
     # Providers — each configured key becomes a live link in the failover chain

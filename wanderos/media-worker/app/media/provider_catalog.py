@@ -22,8 +22,24 @@ import hashlib
 
 from genblaze import Asset, BaseProvider, MockAudioProvider, MockProvider, MockVideoProvider
 
+from genblaze_core.providers import RetryPolicy
+
 from app.config.settings import settings
 from app.media.chain import ChainProvider, Link
+
+
+def _retry() -> RetryPolicy:
+    """Conservative backoff on every rung.
+
+    Generative endpoints rate-limit and time out constantly, and a bare failure
+    here drops to the next PROVIDER — which is a real cost and a quality change,
+    not a free retry. Exhausting a few backed-off attempts against a provider
+    that is merely busy is strictly better than failing over to a weaker model.
+
+    respect_retry_after matters more than the backoff curve: these APIs tell you
+    when to come back, and ignoring that is how you get rate-limited harder.
+    """
+    return RetryPolicy.conservative()
 
 
 def _mock_asset(kind: str):
@@ -105,21 +121,21 @@ def _image_links() -> list[Link]:
 
         model = ("stability.sd3-5-large-v1:0" if settings.pipeline_tier == "final"
                  else "stability.stable-image-core-v1:1")
-        _add(links, "aws-bedrock", model, BedrockImageProvider)
+        _add(links, "aws-bedrock", model, lambda: BedrockImageProvider(retry_policy=_retry()))
     if settings.openai_api_key:
         _add(links, "openai-dalle", "gpt-image-1",
              lambda: _lazy("genblaze_openai", "DalleProvider")()(
-                 api_key=settings.openai_api_key))
+                 api_key=settings.openai_api_key, retry_policy=_retry()))
     if settings.gemini_api_key:
         # genblaze-google renamed GeminiImageProvider -> ImagenProvider; accept both.
         _add(links, "google-imagen", "imagen-4.0-generate-001",
              lambda: _lazy("genblaze_google", "ImagenProvider", "GeminiImageProvider")()(
-                 api_key=settings.gemini_api_key))
+                 api_key=settings.gemini_api_key, retry_policy=_retry()))
     if settings.gmi_api_key:
         model = "seedream-5.0" if settings.pipeline_tier == "final" else "seedream-5.0-lite"
         _add(links, "gmi-cloud", model,
              lambda: _lazy("genblaze_gmicloud", "GMICloudImageProvider")()(
-                 api_key=settings.gmi_api_key))
+                 api_key=settings.gmi_api_key, retry_policy=_retry()))
     return links
 
 
@@ -128,7 +144,7 @@ def _video_links() -> list[Link]:
     if settings.openai_api_key:
         _add(links, "openai-sora", "sora-2",
              lambda: _lazy("genblaze_openai", "SoraProvider")()(
-                 api_key=settings.openai_api_key))
+                 api_key=settings.openai_api_key, retry_policy=_retry()))
     if settings.gmi_api_key:
         for model in ("kling-image2video-v2.1-master", "seedance-2-0-260128"):
             _add(links, "gmi-cloud", model,
@@ -138,13 +154,13 @@ def _video_links() -> list[Link]:
         # Veo shipped alongside Imagen in genblaze-google — another free rung.
         _add(links, "google-veo", "veo-3.0-generate-001",
              lambda: _lazy("genblaze_google", "VeoProvider")()(
-                 api_key=settings.gemini_api_key))
+                 api_key=settings.gemini_api_key, retry_policy=_retry()))
     # Luma is text-to-video only, so it is the last resort for a scene built
     # from a real photo — but it runs on AWS credits and never needs GMI funding.
     if _aws_ready() and settings.aws_staging_bucket:
         from app.media.providers_aws import LumaRayVideoProvider
 
-        _add(links, "aws-luma", "luma.ray-v2:0", LumaRayVideoProvider)
+        _add(links, "aws-luma", "luma.ray-v2:0", lambda: LumaRayVideoProvider(retry_policy=_retry()))
     return links
 
 
