@@ -86,6 +86,7 @@ export function MemoryJobConsole({ jobId }: { jobId: string }) {
   const [claimAnswers, setClaimAnswers] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [shareUrl, setShareUrl] = useState<string | null>(null);
   const [verify, setVerify] = useState<JobDetail["engine"] extends infer _ ? { verified: boolean; checks: Record<string, { pass: boolean; detail: string }> } | null : never>(null);
   const esRef = useRef<EventSource | null>(null);
 
@@ -156,6 +157,24 @@ export function MemoryJobConsole({ jobId }: { jobId: string }) {
       await refresh();
     } catch (e) {
       setError(e instanceof Error ? e.message : "approval failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function makeShareLink() {
+    setBusy(true);
+    setError("");
+    try {
+      const res = await fetch(`/api/memory/${jobId}/share`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ audience: "public" })
+      });
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? "could not create link");
+      setShareUrl((await res.json()).url);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "could not create link");
     } finally {
       setBusy(false);
     }
@@ -463,6 +482,13 @@ export function MemoryJobConsole({ jobId }: { jobId: string }) {
           {status === "delivered" && (
             <div className="space-y-3">
               <button
+                onClick={makeShareLink}
+                disabled={busy}
+                className="mr-3 inline-flex items-center gap-2 rounded-xl border border-line px-4 py-3 text-slateInk transition hover:bg-white/10 disabled:opacity-50"
+              >
+                Get a share link
+              </button>
+              <button
                 onClick={runVerify}
                 disabled={busy}
                 className="inline-flex items-center gap-2 rounded-xl bg-ink px-5 py-3 font-semibold text-white hover:bg-forestDeep disabled:opacity-50"
@@ -470,6 +496,12 @@ export function MemoryJobConsole({ jobId }: { jobId: string }) {
                 {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShieldCheck className="h-4 w-4" />}
                 Verify this film now
               </button>
+              {shareUrl && (
+                <p className="rounded-lg bg-white/10 p-3 text-sm">
+                  <span className="text-white/60">Anyone with this link can watch:</span>{" "}
+                  <a href={shareUrl} className="break-all text-[#B9DCA8] underline">{shareUrl}</a>
+                </p>
+              )}
               {verify && (
                 <div
                   className={`rounded-lg p-3 text-sm ${verify.verified ? "bg-aurora/15 text-[#B9DCA8]" : "bg-[#FBF3E9] text-[#FFB08F]"}`}
