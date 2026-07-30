@@ -22,7 +22,7 @@ from genblaze import Manifest
 from app.config.settings import settings
 from app.media import pipelines
 from app.media.compose import SceneClip, compose_film
-from app.media.scenes import _fetch_asset, _work, render_scene
+from app.media.scenes import fetch_asset, work_dir, render_scene
 from app.trust.sealing import seal_film, verify_film
 from app.runtime.events import emit_job_event
 
@@ -63,7 +63,7 @@ def _narration_audio(job_id: str, trip_id: str, text: str) -> Path | None:
     for step in getattr(run, "steps", []) or []:
         for a in getattr(step, "assets", []) or []:
             if "audio" in (a.media_type or ""):
-                return _fetch_asset(a.url, _work(job_id) / "narration.mp3")
+                return fetch_asset(a.url, work_dir(job_id) / "narration.mp3")
     return None
 
 
@@ -99,8 +99,19 @@ def _run(job: dict) -> None:
         clips = [SceneClip(path=Path(r["clip"]),
                            narration_line=by_idx[r["idx"]].get("narrationLine", ""),
                            synthetic=r["synthetic"]) for r in rendered]
-        film = compose_film(clips, narration, _work(job_id) / "film.mp4",
-                            title=storyboard.get("title", "A Trip to Remember"))
+        film_result = compose_film(clips, narration, work_dir(job_id) / "film.mp4",
+                                   title=storyboard.get("title", "A Trip to Remember"))
+        film = film_result.path
+        job["film"] = {
+            "duration_sec": film_result.duration,
+            "captions_srt": str(film_result.captions_srt) if film_result.captions_srt else None,
+            "captions_vtt": str(film_result.captions_vtt) if film_result.captions_vtt else None,
+            "burned_captions": film_result.burned_captions,
+            # Surfaced, not swallowed: the traveller is told what degraded.
+            "notices": film_result.notices,
+        }
+        for notice in film_result.notices:
+            emit_job_event(job_id, "film.degraded", {"notice": notice})
 
         _set(job, "sealing")
         manifest = Manifest.from_run(job.get("_seed_run") or _seed_run(job_id))
@@ -139,7 +150,7 @@ def _build_pack(job: dict, film: Path, storyboard: dict) -> dict:
     failed reel must never cost the traveller their finished film."""
     from app.delivery import pack as delivery
 
-    work = _work(job["job_id"])
+    work = work_dir(job["job_id"])
     artifacts: dict[str, Path] = {}
     try:
         artifacts["social-reel"] = delivery.build_social_reel(

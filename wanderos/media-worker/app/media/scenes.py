@@ -30,7 +30,7 @@ from app.reasoning.critic import critique_scene
 from app.runtime.events import emit_job_event
 
 
-def _work(job_id: str) -> Path:
+def work_dir(job_id: str) -> Path:
     d = Path(tempfile.gettempdir()) / f"wanderos-render-{job_id}"
     d.mkdir(exist_ok=True)
     return d
@@ -44,7 +44,7 @@ def _ffmpeg(args: list[str], stage: str, timeout: int = 300) -> None:
         raise RuntimeError(f"ffmpeg {stage}: {(exc.stderr or '').strip()[:300]}") from exc
 
 
-def _fetch_asset(url_or_key: str, dest: Path) -> Path | None:
+def fetch_asset(url_or_key: str, dest: Path) -> Path | None:
     """Download a B2 key or URL to dest. mock:// URLs return None (no real bytes)."""
     try:
         url = url_or_key
@@ -156,7 +156,7 @@ def _generated_clip(job_id: str, trip_id: str, scene: dict, image_key: str | Non
         suffix = "mp4"
         if url is None:
             url, suffix = _first_asset(result, "image"), "png"
-        media = _fetch_asset(url, _work(job_id) / f"s{idx}a{state['n']}.{suffix}") if url else None
+        media = fetch_asset(url, work_dir(job_id) / f"s{idx}a{state['n']}.{suffix}") if url else None
         verdict = critique_scene(scene, media, attempt=state["n"])
         verdict["attempt"], verdict["model"], verdict["asset_url"] = state["n"], state["model"], url
         attempts.append(verdict)
@@ -188,7 +188,7 @@ def _generated_clip(job_id: str, trip_id: str, scene: dict, image_key: str | Non
             "last_score": worst.get("overall"),
             "reason": (worst.get("violations") or ["critic never accepted an attempt"])[0],
         })
-        real = _fetch_asset(scene.get("assetKey"), _work(job_id) / f"src_{idx:02d}.jpg") \
+        real = fetch_asset(scene.get("assetKey"), work_dir(job_id) / f"src_{idx:02d}.jpg") \
             if scene.get("assetKey") else None
         if real is not None:
             _parallax_clip(real, out, seconds)
@@ -206,13 +206,13 @@ def _generated_clip(job_id: str, trip_id: str, scene: dict, image_key: str | Non
 
     final = loop_result.final
     url = _first_video_asset(final)
-    media = _fetch_asset(url, out) if url else None
+    media = fetch_asset(url, out) if url else None
     if media is None:
         # No video asset. Bedrock has no ACTIVE video model, so the honest path is
         # the real generated still + the free ffmpeg parallax move — a genuine
         # scene, not a placeholder. Placeholder only if there is no image either.
         image_url = _first_asset(final, "image")
-        still = _fetch_asset(image_url, _work(job_id) / f"gen_{idx:02d}.png") if image_url else None
+        still = fetch_asset(image_url, work_dir(job_id) / f"gen_{idx:02d}.png") if image_url else None
         if still is not None:
             emit_job_event(job_id, "scene.degraded.parallax",
                            {"scene": idx, "reason": "no video model available; animating generated still"})
@@ -231,7 +231,7 @@ def render_scene(job_id: str, trip_id: str, scene: dict,
     idx = scene["idx"]
     seconds = int(scene.get("durationSec", 5))
     source = scene.get("source", "original")
-    work = _work(job_id)
+    work = work_dir(job_id)
     out = work / f"clip_{idx:02d}.mp4"
 
     if scene.get("needsConsent") and not (consents or {}).get(str(idx), False):
@@ -240,7 +240,7 @@ def render_scene(job_id: str, trip_id: str, scene: dict,
 
     photo = None
     if scene.get("assetKey"):
-        photo = _fetch_asset(scene["assetKey"], work / f"photo_{idx:02d}.jpg")
+        photo = fetch_asset(scene["assetKey"], work / f"photo_{idx:02d}.jpg")
 
     attempts: list[dict] = []
     if source == "original":

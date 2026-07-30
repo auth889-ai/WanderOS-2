@@ -20,7 +20,8 @@ import json
 from pathlib import Path
 
 from app.config.settings import settings
-from app.media.compose import _text_png, _run_ffmpeg
+from app.media.captions import text_png
+from app.media.ffmpeg import run_ffmpeg
 
 
 def build_social_reel(film: Path, out: Path, *, title: str, seconds: int = 30) -> Path:
@@ -29,8 +30,8 @@ def build_social_reel(film: Path, out: Path, *, title: str, seconds: int = 30) -
     Centre-crop rather than letterbox: black bars read as lazy on a phone, and
     travel footage survives a centre crop better than most content.
     """
-    title_png = _text_png(title, out.parent / "reel_title.png", size=52, bg=(0, 0, 0, 0))
-    _run_ffmpeg(
+    title_png = text_png(title, out.parent / "reel_title.png", size=52, bg=(0, 0, 0, 0))
+    run_ffmpeg(
         ["-i", str(film), "-i", str(title_png), "-t", str(seconds),
          "-filter_complex",
          "[0]scale=-2:1920,crop=1080:1920,setsar=1[v];[v][1]overlay=(W-w)/2:180",
@@ -42,7 +43,7 @@ def build_social_reel(film: Path, out: Path, *, title: str, seconds: int = 30) -
 
 def build_cover(film: Path, out: Path) -> Path:
     """Share-card still, taken a beat in so it is never a black first frame."""
-    _run_ffmpeg(["-ss", "2", "-i", str(film), "-frames:v", "1", "-q:v", "3", str(out)],
+    run_ffmpeg(["-ss", "2", "-i", str(film), "-frames:v", "1", "-q:v", "3", str(out)],
                 stage="cover")
     return out
 

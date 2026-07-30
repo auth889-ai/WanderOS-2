@@ -20,6 +20,8 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from app.media.ffmpeg import probe_duration
+
 # Below this a "shot" is a camera wobble, not a scene worth cutting to.
 MIN_SHOT_SECONDS = 1.2
 # Cap per clip so one long video cannot dominate the storyboard.
@@ -60,22 +62,10 @@ class ClipEvidence:
         }
 
 
-def _probe_duration(path: Path) -> float:
-    try:
-        out = subprocess.run(
-            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-             "-of", "csv=p=0", str(path)],
-            capture_output=True, text=True, timeout=60, check=True,
-        )
-        return round(float(out.stdout.strip()), 2)
-    except Exception:
-        return 0.0
-
-
 def detect_shots(path: Path, *, work_dir: Path | None = None) -> ClipEvidence:
     """Split a clip into shots and grab a representative frame from each."""
     path = Path(path)
-    evidence = ClipEvidence(key=path.name, duration_sec=_probe_duration(path))
+    evidence = ClipEvidence(key=path.name, duration_sec=probe_duration(path))
     work = Path(work_dir or tempfile.mkdtemp(prefix="wanderos-clip-"))
     work.mkdir(parents=True, exist_ok=True)
 

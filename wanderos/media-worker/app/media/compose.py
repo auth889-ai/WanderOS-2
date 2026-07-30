@@ -1,95 +1,238 @@
-"""Film composition — adaptation of the vendored Backblaze composer pattern
-(vendor/backblaze_samples/composer.py, MIT): hardened single-entry ffmpeg invoker.
-Text is rendered with Pillow and applied via ffmpeg `overlay` — portable across ANY
-ffmpeg build (minimal builds lack drawtext/libass; overlay is universal).
-ffmpeg is the sponsor-sanctioned assembler ("the only non-Genblaze adapter").
+"""Film composition — assembling scenes, narration, music and captions into an MP4.
+
+This adopts the ffmpeg mechanics from the vendored Backblaze composer
+(vendor/backblaze_samples/composer.py, MIT) rather than paraphrasing them. That
+file is written against a different data model (genblaze runs and StoryboardSpec)
+so it cannot be imported directly, but its *filter-graph* logic is model-agnostic
+and carries bug fixes worth more than the lines they occupy:
+
+  - `adelay` WITHOUT `apad`. `apad` with no length pads to infinity, and with
+    `amix=duration=longest` the mix then never terminates — ffmpeg only stops at
+    the timeout. `amix=longest` already extends to the longest real input.
+  - ffmpeg input indices assigned per *added input*, never per scene index, so a
+    scene with no narration doesn't desync every track after it.
+  - Captions degrade in three steps (burn -> soft track -> none) instead of
+    failing the run. Video and audio are the product; captions are a bonus.
+
+Three bugs in the previous hand-rolled version, all of which this fixes:
+
+  1. `-shortest` when muxing narration TRUNCATED THE FILM to the length of the
+     narration track. A 20-second voiceover over a 60-second film silently
+     shipped a 20-second film.
+  2. No `-movflags +faststart`, so the MP4's index sat at the end of the file and
+     a browser had to download the whole thing before showing frame one.
+  3. One narration blob stretched across the whole film, so the voiceover drifted
+     out of sync with the scene it was describing. Narration is now laid per
+     scene at that scene's real start time.
 """
 from __future__ import annotations
 
-import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFont
+from app.media.captions import Cue, text_png, write_srt, write_vtt
+from app.media.ffmpeg import FFmpegError, probe_duration, run_ffmpeg
 
+TITLE_SECONDS = 2.0
+MUSIC_DUCK_DB = "-18dB"
 
-def _run_ffmpeg(args: list[str], *, stage: str, timeout: int = 300) -> None:
-    try:
-        subprocess.run(
-            ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", *args],
-            capture_output=True, text=True, timeout=timeout, check=True,
-        )
-    except subprocess.CalledProcessError as exc:
-        raise RuntimeError(f"ffmpeg {stage} failed: {(exc.stderr or '').strip()[:400]}") from exc
-
-
-def _font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
-    for cand in ("/System/Library/Fonts/Helvetica.ttc", "/System/Library/Fonts/Supplemental/Arial.ttf",
-                 "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"):
-        try:
-            return ImageFont.truetype(cand, size)
-        except Exception:
-            continue
-    return ImageFont.load_default()
-
-
-def _text_png(text: str, out: Path, *, size: int, fg="white", bg=(0, 0, 0, 140), pad=14) -> Path:
-    font = _font(size)
-    probe = ImageDraw.Draw(Image.new("RGBA", (10, 10)))
-    box = probe.textbbox((0, 0), text, font=font)
-    w, h = box[2] - box[0] + pad * 2, box[3] - box[1] + pad * 2
-    img = Image.new("RGBA", (w, h), bg)
-    ImageDraw.Draw(img).text((pad - box[0], pad - box[1]), text, font=font, fill=fg)
-    img.save(out)
-    return out
+_NO_SUB_NOTICE = "Captions unavailable — the film has no embedded caption track."
 
 
 @dataclass
 class SceneClip:
     path: Path
     narration_line: str
-    synthetic: bool  # burned "AI-recreated scene" disclosure when True (trust thesis)
+    synthetic: bool  # burns an "AI-recreated scene" disclosure (the trust thesis)
+    narration_path: Path | None = None  # per-scene voiceover, laid at scene start
+    duration: float = 0.0  # 0 = probe it
+
+    def resolved_duration(self) -> float:
+        if self.duration > 0:
+            return self.duration
+        self.duration = probe_duration(self.path)
+        return self.duration
+
+
+@dataclass
+class FilmResult:
+    path: Path
+    duration: float
+    captions_srt: Path | None = None
+    captions_vtt: Path | None = None
+    burned_captions: bool = False
+    notices: list[str] = field(default_factory=list)
+
+
+def _mix_audio(scenes: list[SceneClip], music: Path | None, work: Path,
+               *, offset: float) -> Path | None:
+    """Lay each scene's narration at its own start time, then add the music bed.
+
+    `offset` is the title card, which plays before scene one — without it every
+    narration line lands one title-card early.
+
+    Music ducks under narration only when there IS narration to duck under;
+    otherwise it plays at full level and carries the film on its own.
+    """
+    inputs: list[str] = []
+    filters: list[str] = []
+    labels: list[str] = []
+    idx = 0
+    at_ms = int(offset * 1000)
+
+    for scene in scenes:
+        if scene.narration_path is not None and scene.narration_path.exists():
+            inputs += ["-i", str(scene.narration_path)]
+            filters.append(f"[{idx}:a]adelay={at_ms}|{at_ms}[n{idx}]")
+            labels.append(f"[n{idx}]")
+            idx += 1
+        at_ms += int(scene.resolved_duration() * 1000)
+
+    if music is not None and music.exists():
+        inputs += ["-i", str(music)]
+        gain = MUSIC_DUCK_DB if labels else "0dB"
+        filters.append(f"[{idx}:a]volume={gain}[mus]")
+        labels.append("[mus]")
+        idx += 1
+
+    if not labels:
+        return None  # silent film; the caller renders video only
+
+    filters.append(
+        f"{''.join(labels)}amix=inputs={len(labels)}"
+        ":duration=longest:dropout_transition=0[aout]"
+    )
+    out = work / "audio.m4a"
+    run_ffmpeg([*inputs, "-filter_complex", ";".join(filters),
+                "-map", "[aout]", "-c:a", "aac", "-b:a", "192k", str(out)],
+               stage="mix-audio")
+    return out
+
+
+def _finalize(video: Path, audio: Path | None, srt: Path | None, out: Path,
+              *, burn: bool) -> Path:
+    """Mux the final MP4. Captions burn, mux soft, or are omitted.
+
+    `+faststart` moves the moov atom to the front so a browser can start playing
+    on the first bytes instead of waiting for the whole download.
+    """
+    inputs = ["-i", str(video)]
+    idx = 1
+    audio_idx = None
+    if audio is not None:
+        inputs += ["-i", str(audio)]
+        audio_idx, idx = idx, idx + 1
+    sub_idx = None
+    if srt is not None and not burn:
+        inputs += ["-i", str(srt)]
+        sub_idx, idx = idx, idx + 1
+
+    args = [*inputs]
+    if srt is not None and burn:
+        # The `subtitles` filter reads the SRT path directly (not as an input).
+        # Paths come from tempfile, so ':' is the only filtergraph-special
+        # character we can realistically hit.
+        escaped = str(srt).replace(":", r"\:")
+        args += ["-filter_complex", f"[0:v]subtitles='{escaped}'[vout]", "-map", "[vout]",
+                 "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p"]
+    else:
+        args += ["-map", "0:v", "-c:v", "copy"]
+
+    # NOTE: no `-shortest`. It truncates the film to the shortest stream, which
+    # cut every film whose narration was shorter than its picture.
+    args += ["-map", f"{audio_idx}:a", "-c:a", "copy"] if audio_idx is not None else ["-an"]
+    if sub_idx is not None:
+        args += ["-map", f"{sub_idx}:s", "-c:s", "mov_text"]
+    args += ["-movflags", "+faststart", str(out)]
+    run_ffmpeg(args, stage="finalize")
+    return out
 
 
 def compose_film(
     scenes: list[SceneClip], narration_audio: Path | None, out: Path,
     *, title: str, fps: int = 24, size: str = "1280x720",
-) -> Path:
+    music: Path | None = None,
+) -> FilmResult:
+    """Assemble the film. `narration_audio` is a whole-film fallback for callers
+    that have not yet moved to per-scene narration."""
     work = out.parent
-    W, H = (int(x) for x in size.split("x"))
+    width, _height = (int(x) for x in size.split("x"))
+    notices: list[str] = []
     prepared: list[Path] = []
 
-    # 2s title card: background + centered Pillow-rendered title
-    title_png = _text_png(title, work / "t_title.png", size=46, bg=(0, 0, 0, 0))
+    title_png = text_png(title, work / "t_title.png", size=46, bg=(0, 0, 0, 0),
+                         max_width=int(width * 0.8))
     card = work / "card_title.mp4"
-    _run_ffmpeg(
-        ["-f", "lavfi", "-i", f"color=c=0x0f172a:s={size}:d=2:r={fps}", "-i", str(title_png),
+    run_ffmpeg(
+        ["-f", "lavfi", "-i", f"color=c=0x0f172a:s={size}:d={TITLE_SECONDS}:r={fps}",
+         "-i", str(title_png),
          "-filter_complex", "[0][1]overlay=(W-w)/2:(H-h)/2", "-pix_fmt", "yuv420p", str(card)],
         stage="title-card",
     )
     prepared.append(card)
 
-    ai_png = _text_png("AI-recreated scene", work / "t_ai.png", size=22, fg=(255, 209, 102, 255))
-    for i, sc in enumerate(scenes):
-        sub_png = _text_png(sc.narration_line, work / f"t_sub{i}.png", size=26)
+    ai_png = text_png("AI-recreated scene", work / "t_ai.png", size=22, fg=(255, 209, 102, 255))
+    cues: list[Cue] = []
+    at = TITLE_SECONDS
+
+    for i, scene in enumerate(scenes):
+        sub_png = text_png(scene.narration_line, work / f"t_sub{i}.png", size=26,
+                           max_width=int(width * 0.86))
         labeled = work / f"scene_{i:02d}.mp4"
-        inputs = ["-i", str(sc.path), "-i", str(sub_png)]
-        fc = f"[0]scale={size},fps={fps}[v0];[v0][1]overlay=(W-w)/2:H-h-28"
-        if sc.synthetic:
+        inputs = ["-i", str(scene.path), "-i", str(sub_png)]
+        graph = f"[0]scale={size},fps={fps}[v0];[v0][1]overlay=(W-w)/2:H-h-28"
+        if scene.synthetic:
             inputs += ["-i", str(ai_png)]
-            fc += "[v1];[v1][2]overlay=24:24"
-        _run_ffmpeg([*inputs, "-filter_complex", fc, "-an", "-pix_fmt", "yuv420p", str(labeled)],
-                    stage=f"label-scene-{i}")
+            graph += "[v1];[v1][2]overlay=24:24"
+        run_ffmpeg([*inputs, "-filter_complex", graph, "-an", "-pix_fmt", "yuv420p", str(labeled)],
+                   stage=f"label-scene-{i}")
         prepared.append(labeled)
+
+        seconds = scene.resolved_duration() or probe_duration(labeled)
+        scene.duration = seconds
+        if scene.narration_line.strip():
+            cues.append(Cue(text=scene.narration_line, start=at, end=at + seconds))
+        at += seconds
 
     concat_list = work / "concat.txt"
     concat_list.write_text("".join(f"file '{p.name}'\n" for p in prepared))
     silent = work / "film_silent.mp4"
-    _run_ffmpeg(["-f", "concat", "-safe", "0", "-i", str(concat_list), "-c", "copy", str(silent)], stage="concat")
+    run_ffmpeg(["-f", "concat", "-safe", "0", "-i", str(concat_list), "-c", "copy", str(silent)],
+               stage="concat")
 
-    if narration_audio and narration_audio.exists():
-        _run_ffmpeg(["-i", str(silent), "-i", str(narration_audio), "-map", "0:v", "-map", "1:a",
-                     "-c:v", "copy", "-c:a", "aac", "-shortest", str(out)], stage="mix-narration")
+    per_scene = any(s.narration_path for s in scenes)
+    if per_scene or music:
+        audio = _mix_audio(scenes, music, work, offset=TITLE_SECONDS)
+    elif narration_audio and narration_audio.exists():
+        # Legacy whole-film narration. Still no `-shortest`, so a short voiceover
+        # no longer truncates the picture.
+        audio = work / "audio.m4a"
+        run_ffmpeg(["-i", str(narration_audio), "-c:a", "aac", "-b:a", "192k", str(audio)],
+                   stage="encode-narration")
+        notices.append("Narration is a single track for the whole film, so it may drift "
+                       "from the scene it describes.")
     else:
-        _run_ffmpeg(["-i", str(silent), "-c", "copy", str(out)], stage="finalize")
-    return out
+        audio = None
+
+    srt = write_srt(cues, work / "captions.srt") if cues else None
+    vtt = write_vtt(cues, work / "captions.vtt") if cues else None
+
+    # Captions are ALREADY burned in as pixels, per scene, above. The soft track
+    # is muxed for screen readers, search and viewers who want captions off —
+    # never burned a second time, which would double every line on screen.
+    try:
+        final = _finalize(silent, audio, srt, out, burn=False)
+    except FFmpegError:
+        # A container without mov_text support should still yield a film.
+        notices.append(_NO_SUB_NOTICE)
+        final = _finalize(silent, audio, None, out, burn=False)
+        srt, vtt = None, vtt
+
+    return FilmResult(
+        path=final,
+        duration=probe_duration(final),
+        captions_srt=srt,
+        captions_vtt=vtt,
+        burned_captions=True,
+        notices=notices,
+    )
