@@ -50,6 +50,52 @@ def _aws_ready() -> bool:
     return aws_configured()
 
 
+# Providers that could not even be constructed, with the reason. Surfaced through
+# chain_summary() so a silently shorter chain is still visible.
+_UNAVAILABLE: list[dict] = []
+
+
+def _add(links: list[Link], label: str, model: str, build) -> None:
+    """Append a rung, tolerating a provider that cannot be built at all.
+
+    The whole premise of this catalog is that a dead vendor degrades the run
+    instead of ending it — but that only held for vendors that failed at REQUEST
+    time. A vendor whose SDK renamed a class failed at IMPORT time and took the
+    entire render with it, which is precisely the single point of failure the
+    chain exists to remove.
+
+    This is not hypothetical: genblaze-google renamed GeminiImageProvider to
+    ImagenProvider, and every film stopped rendering with an ImportError — even
+    though Bedrock and DALL-E were both configured, healthy, and ahead of Gemini
+    in the chain.
+    """
+    try:
+        links.append(Link(label, build(), model))
+    except Exception as exc:
+        _UNAVAILABLE.append({"provider": label, "model": model,
+                             "reason": f"{type(exc).__name__}: {exc}"[:200]})
+
+
+def _lazy(module: str, *names: str):
+    """Return the first class in `module` matching any of `names`.
+
+    Provider SDKs rename classes between releases. Accepting the known aliases
+    means an upgrade drops a rung to a warning instead of an outage.
+    """
+    def build_class():
+        import importlib
+
+        mod = importlib.import_module(module)
+        for name in names:
+            if hasattr(mod, name):
+                return getattr(mod, name)
+        raise ImportError(
+            f"{module} exports none of {names}; it has "
+            f"{[n for n in dir(mod) if not n.startswith('_')]}"
+        )
+    return build_class
+
+
 # --- Chain builders: one Link per configured credential, best first ---
 
 def _image_links() -> list[Link]:
@@ -59,44 +105,46 @@ def _image_links() -> list[Link]:
 
         model = ("stability.sd3-5-large-v1:0" if settings.pipeline_tier == "final"
                  else "stability.stable-image-core-v1:1")
-        links.append(Link("aws-bedrock", BedrockImageProvider(), model))
+        _add(links, "aws-bedrock", model, BedrockImageProvider)
     if settings.openai_api_key:
-        from genblaze_openai import DalleProvider
-
-        links.append(Link("openai-dalle", DalleProvider(api_key=settings.openai_api_key),
-                          "gpt-image-1"))
+        _add(links, "openai-dalle", "gpt-image-1",
+             lambda: _lazy("genblaze_openai", "DalleProvider")()(
+                 api_key=settings.openai_api_key))
     if settings.gemini_api_key:
-        # Native Gemini image provider, added in genblaze-google 0.3.4.
-        from genblaze_google import GeminiImageProvider
-
-        links.append(Link("google-gemini", GeminiImageProvider(api_key=settings.gemini_api_key),
-                          "gemini-2.5-flash-image"))
+        # genblaze-google renamed GeminiImageProvider -> ImagenProvider; accept both.
+        _add(links, "google-imagen", "imagen-4.0-generate-001",
+             lambda: _lazy("genblaze_google", "ImagenProvider", "GeminiImageProvider")()(
+                 api_key=settings.gemini_api_key))
     if settings.gmi_api_key:
-        from genblaze_gmicloud import GMICloudImageProvider
-
         model = "seedream-5.0" if settings.pipeline_tier == "final" else "seedream-5.0-lite"
-        links.append(Link("gmi-cloud", GMICloudImageProvider(api_key=settings.gmi_api_key), model))
+        _add(links, "gmi-cloud", model,
+             lambda: _lazy("genblaze_gmicloud", "GMICloudImageProvider")()(
+                 api_key=settings.gmi_api_key))
     return links
 
 
 def _video_links() -> list[Link]:
     links: list[Link] = []
     if settings.openai_api_key:
-        from genblaze_openai import SoraProvider
-
-        links.append(Link("openai-sora", SoraProvider(api_key=settings.openai_api_key), "sora-2"))
+        _add(links, "openai-sora", "sora-2",
+             lambda: _lazy("genblaze_openai", "SoraProvider")()(
+                 api_key=settings.openai_api_key))
     if settings.gmi_api_key:
-        from genblaze_gmicloud import GMICloudVideoProvider
-
-        provider = GMICloudVideoProvider(api_key=settings.gmi_api_key)
-        links.append(Link("gmi-cloud", provider, "kling-image2video-v2.1-master"))
-        links.append(Link("gmi-cloud", provider, "seedance-2-0-260128"))
+        for model in ("kling-image2video-v2.1-master", "seedance-2-0-260128"):
+            _add(links, "gmi-cloud", model,
+                 lambda: _lazy("genblaze_gmicloud", "GMICloudVideoProvider")()(
+                     api_key=settings.gmi_api_key))
+    if settings.gemini_api_key:
+        # Veo shipped alongside Imagen in genblaze-google — another free rung.
+        _add(links, "google-veo", "veo-3.0-generate-001",
+             lambda: _lazy("genblaze_google", "VeoProvider")()(
+                 api_key=settings.gemini_api_key))
     # Luma is text-to-video only, so it is the last resort for a scene built
     # from a real photo — but it runs on AWS credits and never needs GMI funding.
     if _aws_ready() and settings.aws_staging_bucket:
         from app.media.providers_aws import LumaRayVideoProvider
 
-        links.append(Link("aws-luma", LumaRayVideoProvider(), "luma.ray-v2:0"))
+        _add(links, "aws-luma", "luma.ray-v2:0", LumaRayVideoProvider)
     return links
 
 
@@ -145,15 +193,21 @@ def tts_provider(job_id: str = "") -> BaseProvider:
                           MockAudioProvider(name="mock-tts", assets=_mock_asset("audio")))
 
 
-def chain_summary() -> dict[str, list[str]]:
+def chain_summary() -> dict:
     """What the judge-facing UI shows: the live failover ladder per modality."""
     if settings.pipeline_tier == "mock":
-        return {"image": ["mock"], "video": ["mock"], "audio": ["mock"]}
-    return {
+        return {"image": ["mock"], "video": ["mock"], "audio": ["mock"], "unavailable": []}
+    _UNAVAILABLE.clear()  # rebuilt by the link builders below
+    chains = {
         "image": [f"{l.label}:{l.model}" for l in _image_links()],
         "video": [f"{l.label}:{l.model}" for l in _video_links()],
         "audio": [f"{l.label}:{l.model}" for l in _audio_links()],
     }
+    # A rung that could not be built is reported rather than silently missing —
+    # otherwise a chain that shrank from four providers to two looks identical
+    # to one that only ever had two.
+    chains["unavailable"] = list(_UNAVAILABLE)
+    return chains
 
 
 def models() -> dict:

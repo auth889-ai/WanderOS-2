@@ -55,16 +55,44 @@ def _set(job: dict, status: str, **extra) -> None:
     emit_job_event(job["job_id"], f"job.{status}", {k: str(v)[:200] for k, v in extra.items()})
 
 
-def _narration_audio(job_id: str, trip_id: str, text: str) -> Path | None:
-    if not text:
+def _narration_audio(job_id: str, trip_id: str, text: str, *,
+                     name: str = "narration.mp3") -> Path | None:
+    if not text.strip():
         return None
     result = pipelines.run_pipeline(pipelines.build_narrate(job_id, text), trip_id)
     run = getattr(result, "run", result)
     for step in getattr(run, "steps", []) or []:
         for a in getattr(step, "assets", []) or []:
             if "audio" in (a.media_type or ""):
-                return fetch_asset(a.url, work_dir(job_id) / "narration.mp3")
+                return fetch_asset(a.url, work_dir(job_id) / name)
     return None
+
+
+def _narrate_scenes(job_id: str, trip_id: str, clips: list[SceneClip]) -> int:
+    """Synthesise one voice track per scene, in parallel.
+
+    Previously the whole film shared a single track built from
+    `storyboard.narrationFull`. Two problems: storyboards written per scene leave
+    that field empty, so the film shipped SILENT; and when it was populated the
+    voice drifted out of sync with the scene it described, because one continuous
+    read cannot know where a scene ends.
+
+    Per-scene tracks are laid at each scene's real start time by the composer, so
+    the words land on the picture they belong to. TTS is best-effort per scene: a
+    scene that fails to narrate stays in the film with its caption intact.
+    """
+    def narrate(item: tuple[int, SceneClip]) -> None:
+        i, clip = item
+        try:
+            clip.narration_path = _narration_audio(
+                job_id, trip_id, clip.narration_line, name=f"narration-{i:02d}.mp3")
+        except Exception as exc:
+            emit_job_event(job_id, "narration.failed",
+                           {"scene": i, "reason": f"{type(exc).__name__}: {exc}"[:200]})
+
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        list(pool.map(narrate, enumerate(clips)))
+    return sum(1 for c in clips if c.narration_path)
 
 
 def _upload_delivery(trip_id: str, film: Path, name: str) -> str | None:
@@ -94,11 +122,18 @@ def _run(job: dict) -> None:
                         for r in results]
 
         _set(job, "composing")
-        narration = _narration_audio(job_id, trip_id, storyboard.get("narrationFull", ""))
         by_idx = {s["idx"]: s for s in scenes}
         clips = [SceneClip(path=Path(r["clip"]),
                            narration_line=by_idx[r["idx"]].get("narrationLine", ""),
                            synthetic=r["synthetic"]) for r in rendered]
+
+        narrated = _narrate_scenes(job_id, trip_id, clips)
+        emit_job_event(job_id, "narration.ready", {"scenes": len(clips), "narrated": narrated})
+        # Whole-film narration only as a fallback, for storyboards that carry
+        # narrationFull instead of per-scene lines.
+        narration = (None if narrated
+                     else _narration_audio(job_id, trip_id, storyboard.get("narrationFull", "")))
+
         film_result = compose_film(clips, narration, work_dir(job_id) / "film.mp4",
                                    title=storyboard.get("title", "A Trip to Remember"))
         film = film_result.path
@@ -107,6 +142,7 @@ def _run(job: dict) -> None:
             "captions_srt": str(film_result.captions_srt) if film_result.captions_srt else None,
             "captions_vtt": str(film_result.captions_vtt) if film_result.captions_vtt else None,
             "burned_captions": film_result.burned_captions,
+            "scenes_narrated": f"{narrated}/{len(clips)}",
             # Surfaced, not swallowed: the traveller is told what degraded.
             "notices": film_result.notices,
         }

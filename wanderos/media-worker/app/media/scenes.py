@@ -16,6 +16,7 @@ so the lineage the passport shows is the lineage that actually happened.
 from __future__ import annotations
 
 import json
+import logging
 import subprocess
 import tempfile
 import time
@@ -28,6 +29,8 @@ from app.config.settings import settings
 from app.media import pipelines
 from app.reasoning.critic import critique_scene
 from app.runtime.events import emit_job_event
+
+logger = logging.getLogger(__name__)
 
 
 def work_dir(job_id: str) -> Path:
@@ -44,21 +47,61 @@ def _ffmpeg(args: list[str], stage: str, timeout: int = 300) -> None:
         raise RuntimeError(f"ffmpeg {stage}: {(exc.stderr or '').strip()[:300]}") from exc
 
 
+def _b2_key_from_url(url: str) -> str | None:
+    """Recover the object key from an UNSIGNED URL into one of our own buckets.
+
+    Providers hand back the plain object URL after writing to B2. Those buckets
+    are private, so fetching that URL directly returns 403 — which is exactly how
+    narration went missing: TTS succeeded, the asset existed, the download 403'd,
+    and a bare `except` turned it into `None` and a silent film.
+
+    A URL that already carries a signature is left alone; re-signing it would
+    invalidate it.
+    """
+    from urllib.parse import urlparse
+
+    parsed = urlparse(url)
+    if "X-Amz-Signature" in (parsed.query or "") or "Authorization" in (parsed.query or ""):
+        return None
+    buckets = {settings.b2_bucket_media, settings.b2_bucket_provenance,
+               settings.b2_bucket_intermediate, settings.b2_bucket_logs}
+    parts = parsed.path.lstrip("/").split("/", 1)
+    # path-style: /<bucket>/<key>
+    if len(parts) == 2 and parts[0] in buckets:
+        return parts[1]
+    # virtual-host style: <bucket>.s3.<region>.backblazeb2.com/<key>
+    host_bucket = parsed.netloc.split(".", 1)[0]
+    if host_bucket in buckets and parsed.path.strip("/"):
+        return parsed.path.lstrip("/")
+    return None
+
+
 def fetch_asset(url_or_key: str, dest: Path) -> Path | None:
     """Download a B2 key or URL to dest. mock:// URLs return None (no real bytes)."""
+    reason = ""
     try:
         url = url_or_key
+        if url.startswith("mock://"):
+            return None
         if not url.startswith(("http://", "https://")):
             if not settings.b2_configured:
                 return None
             url = pipelines.presign(url_or_key)
-        if url.startswith("mock://"):
-            return None
+        elif settings.b2_configured:
+            key = _b2_key_from_url(url)
+            if key:
+                url = pipelines.presign(key)
         with urllib.request.urlopen(url, timeout=120) as r:
             dest.write_bytes(r.read())
-        return dest if dest.stat().st_size > 0 else None
-    except Exception:
-        return None
+        if dest.stat().st_size > 0:
+            return dest
+        reason = "empty response body"
+    except Exception as exc:
+        reason = f"{type(exc).__name__}: {exc}"[:200]
+    # Still returns None so callers degrade rather than crash, but the reason is
+    # no longer lost — a silent None is how the last two bugs stayed hidden.
+    logger.warning("asset fetch failed: %s (%s)", url_or_key[:120], reason)
+    return None
 
 
 def _placeholder_clip(out: Path, seconds: int, label: str) -> Path:
