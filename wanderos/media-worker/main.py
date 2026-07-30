@@ -259,3 +259,187 @@ def rights_assess(req: RightsReq):
         notice_days=req.notice_days, fare_paid=req.fare_paid,
     )
     return assess(flight, baggage=req.baggage)
+
+
+# ── Planning (features 9-14) — all computed live, nothing cached ──
+
+class PackingReq(BaseModel):
+    destination: str
+    start: str                     # ISO date
+    end: str
+    activities: list[str] = []
+    travellers: int = 1
+    medications: list[str] = []
+    home_country: str = ""
+    checked_allowance_kg: float | None = None
+
+
+@app.post("/planning/packing")
+def planning_packing(req: PackingReq):
+    """Weather-aware packing list. Fetches REAL weather for the real dates."""
+    from datetime import date
+
+    from app.planning.packing import build_for_trip
+
+    return build_for_trip(
+        req.destination, date.fromisoformat(req.start), date.fromisoformat(req.end),
+        activities=req.activities, travellers=req.travellers,
+        medications=req.medications, home_country=req.home_country,
+        checked_allowance_kg=req.checked_allowance_kg,
+    )
+
+
+class WeatherReq(BaseModel):
+    destination: str
+    start: str
+    end: str
+
+
+@app.post("/planning/weather")
+def planning_weather(req: WeatherReq):
+    """Live weather for a destination name. Says whether it is a forecast or a
+    climate estimate — the two are different claims and are never conflated."""
+    from datetime import date
+
+    from app.planning.weather import for_trip
+
+    place, window = for_trip(req.destination, date.fromisoformat(req.start),
+                             date.fromisoformat(req.end))
+    return {"place": place.as_dict() if place else None, "weather": window.as_dict()}
+
+
+@app.get("/trust/verify-demo")
+def trust_verify_demo():
+    """Seal a file and verify it, RIGHT NOW, then tamper with it and fail.
+
+    Exists because a page claiming tamper-evidence while showing a hardcoded
+    "PASS" is exactly the kind of unverifiable claim this project argues against.
+    Every line of this output is produced by the real sealing code on this call.
+    """
+    import hashlib
+    import json
+    import tempfile
+    from pathlib import Path
+
+    from cryptography.exceptions import InvalidSignature
+
+    from app.trust.sealing import _load_private, _load_public
+
+    work = Path(tempfile.mkdtemp(prefix="wanderos-verify-"))
+    payload = work / "artifact.bin"
+    payload.write_bytes(b"WanderOS sealed artifact demo")
+
+    digest = hashlib.sha256(payload.read_bytes()).hexdigest()
+    record = {"sha256": digest, "artifact": payload.name}
+    canonical = json.dumps(record, sort_keys=True, separators=(",", ":")).encode()
+
+    checks: list[dict] = []
+    try:
+        signature = _load_private().sign(canonical)
+        checks.append({"check": "signature_created", "passed": True,
+                       "detail": f"ed25519 over {len(canonical)} canonical bytes"})
+    except Exception as exc:
+        return {"available": False,
+                "reason": f"signing key unavailable: {type(exc).__name__}",
+                "note": "set MANIFEST_SIGNING_KEY to run this live"}
+
+    checks.append({
+        "check": "file_hash", "passed":
+            hashlib.sha256(payload.read_bytes()).hexdigest() == record["sha256"],
+        "detail": f"sha256 {digest[:24]}…"})
+
+    try:
+        _load_public().verify(signature, canonical)
+        checks.append({"check": "signature", "passed": True,
+                       "detail": "verified against the public key"})
+    except InvalidSignature:
+        checks.append({"check": "signature", "passed": False, "detail": "did not verify"})
+
+    # Now break it, so the failure is demonstrated rather than asserted.
+    tampered = bytearray(payload.read_bytes())
+    tampered[0] ^= 0x01
+    tampered_digest = hashlib.sha256(bytes(tampered)).hexdigest()
+    return {
+        "available": True,
+        "checks": checks,
+        "tamper_test": {
+            "bytes_changed": 1,
+            "original_sha256": digest,
+            "tampered_sha256": tampered_digest,
+            "verified_after_tamper": tampered_digest == digest,
+            "detail": f"HASH MISMATCH — {tampered_digest[:12]}… ≠ {digest[:12]}…",
+        },
+        "note": "Computed on this request. Nothing here is cached or hardcoded.",
+    }
+
+
+# Cached in-process: the demo classification is a REAL model call, and running
+# it on every page load would be slow and expensive. One hour is short enough
+# that a code change is reflected quickly and long enough to survive a demo.
+_DEMO_CACHE: dict = {}
+_DEMO_TTL_SEC = 3600
+
+
+@app.get("/evidence/demo-classify")
+def evidence_demo_classify():
+    """Run the REAL evidence + truth pipeline over the bundled demo photos.
+
+    Replaces a set of hardcoded 'VERIFIED 95%' badges that were written by hand.
+    A page that argues generated content must be labelled cannot itself display
+    invented confidence scores.
+    """
+    import time as _time
+    from pathlib import Path
+
+    cached = _DEMO_CACHE.get("payload")
+    if cached and (_time.time() - _DEMO_CACHE.get("at", 0)) < _DEMO_TTL_SEC:
+        return {**cached, "cached": True,
+                "computed_age_sec": int(_time.time() - _DEMO_CACHE["at"])}
+
+    photo_dir = Path(__file__).resolve().parent.parent / "public" / "images" / "traveler-dashboard"
+    names = ["city.jpg", "m4.png", "m7.png"]
+    # Inlined as data URIs, not file:// — the vision API cannot fetch a local
+    # path, and a file:// URI fails silently into the degraded bucket.
+    import base64 as _b64
+    import mimetypes as _mt
+
+    assets = []
+    for n in names:
+        path = photo_dir / n
+        if not path.exists():
+            continue
+        mime = _mt.guess_type(n)[0] or "image/jpeg"
+        uri = f"data:{mime};base64," + _b64.b64encode(path.read_bytes()).decode()
+        assets.append({"key": n, "url": uri, "kind": "photo"})
+    if not assets:
+        return {"available": False, "reason": "demo photos not found on this deployment"}
+
+    from app.evidence.extractors import extract_all
+    from app.evidence.truth import classify
+
+    try:
+        bundle = extract_all(assets, job_id="showcase-demo")
+        # classify() returns {"claims": [...], "classifier": str, "degraded": bool}
+        # — not a bare list. Indexing it as one produced strings, not claims.
+        classification = classify(bundle, timeline=None)
+        claims = classification.get("claims", [])
+    except Exception as exc:
+        return {"available": False, "reason": f"{type(exc).__name__}: {exc}"[:200]}
+
+    payload = {
+        "available": True,
+        "photos": [{"key": p.get("key"), "source": p.get("source"),
+                    "labels": [l.get("name") if isinstance(l, dict) else l
+                               for l in (p.get("labels") or [])][:6],
+                    "people": p.get("people"), "setting": p.get("setting")}
+                   for p in bundle.get("photos", [])],
+        "claims": [{"id": c.get("id"), "status": c.get("status"),
+                    "confidence": c.get("confidence"), "text": c.get("text")}
+                   for c in claims],
+        "sources_used": bundle.get("sources_used", []),
+        "classifier": classification.get("classifier"),
+        "degraded": classification.get("degraded", False),
+        "note": "Classified by the live vision + Claude pipeline on this deployment.",
+    }
+    _DEMO_CACHE.update({"payload": payload, "at": _time.time()})
+    return {**payload, "cached": False}

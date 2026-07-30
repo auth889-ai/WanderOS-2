@@ -148,6 +148,45 @@ ACTIVITY_ITEMS = {
 }
 
 
+def build_for_trip(destination: str, start, end, **kwargs) -> dict:
+    """Build a packing list from a destination NAME and real dates.
+
+    Fetches the actual weather rather than making the caller supply temperatures
+    — which previously meant the caller had to already know the answer, and in
+    practice meant a guess. The result records whether the weather was a
+    forecast or a climate estimate, because packing for "typically 8C in March"
+    is a different confidence than packing for a forecast.
+    """
+    from app.planning.weather import for_trip
+
+    place, window = for_trip(destination, start, end)
+    profile = TripProfile(
+        days=(end - start).days + 1,
+        destination_country=(place.country_code if place else kwargs.pop("destination_country", "")),
+        min_temp_c=window.min_temp_c,
+        max_temp_c=window.max_temp_c,
+        rain_expected=window.rain_expected,
+        **kwargs,
+    )
+    result = build_packing_list(profile)
+    result["weather"] = {
+        "kind": window.kind,
+        "resolved_place": place.as_dict() if place else None,
+        "min_temp_c": window.min_temp_c, "max_temp_c": window.max_temp_c,
+        "rain_expected": window.rain_expected, "wet_days": window.wet_days,
+        "basis": window.basis,
+        "attribution": window.attribution,
+    }
+    if not window.usable:
+        result["warnings"].append(
+            f"weather unavailable ({window.basis}) — the list assumes nothing about climate")
+    elif window.kind == "climate_estimate":
+        result["warnings"].append(
+            "weather is a climate estimate from previous years, not a forecast — "
+            "re-check nearer the date")
+    return result
+
+
 def build_packing_list(profile: TripProfile) -> dict:
     items: list[Item] = []
     items += _clothing(profile)

@@ -20,6 +20,29 @@ type Entitlement = {
   regime: string; kind: string; article: string; amount: number | null;
   currency: string; confidence: string; reason: string; action_required: string;
 };
+type Verify = {
+  available: boolean;
+  reason?: string;
+  checks: { check: string; passed: boolean; detail: string }[];
+  tamper_test: { bytes_changed: number; verified_after_tamper: boolean; detail: string };
+  note: string;
+};
+type WeatherResult = {
+  label: string;
+  place: { name: string; country_code: string } | null;
+  weather: { kind: string; min_temp_c: number; max_temp_c: number; wet_days: number;
+             rain_expected: boolean; basis: string };
+};
+type DemoEvidence = {
+  available: boolean;
+  reason?: string;
+  classifier?: string;
+  cached?: boolean;
+  sources_used: string[];
+  photos: { key: string; source: string | null; labels: string[]; people: number | null;
+            setting: string | null }[];
+  claims: { id: string; status: string; confidence: number; text: string }[];
+};
 type Rights = {
   flight: string; delay_hours: number; distance_km: number;
   headline_amount: number | null; entitlements: Entitlement[];
@@ -46,20 +69,37 @@ const DELAYED_FLIGHT = {
   cause: "technical_fault"
 };
 
+// Dates are derived from today so the page never quietly shows a stale window.
+const iso = (daysFromNow: number) =>
+  new Date(Date.now() + daysFromNow * 86_400_000).toISOString().slice(0, 10);
+const WEATHER_DEMOS = [
+  { destination: "Reykjavik", start: iso(5), end: iso(12) },   // inside forecast range
+  { destination: "Ubud", start: iso(150), end: iso(160) }      // far out -> climate estimate
+];
+
 const CONFIDENCE_STYLE: Record<string, string> = {
   likely: "bg-forest text-white",
   conditional: "bg-peach text-ink",
   unavailable: "bg-sand text-slateInk"
 };
 
-const EVIDENCE_PHOTOS = [
-  { src: "/images/traveler-dashboard/city.jpg", label: "city.jpg", verdict: "VERIFIED", pct: 95,
-    claim: "A sunset was photographed over the ocean, with a wooden bridge" },
-  { src: "/images/traveler-dashboard/m4.png", label: "m4.png", verdict: "VERIFIED", pct: 90,
-    claim: "Pink flowers and tall buildings were photographed" },
-  { src: "/images/traveler-dashboard/m7.png", label: "m7.png", verdict: "VERIFIED", pct: 90,
-    claim: "A sunset landscape was photographed from near a window" }
-];
+// Only the file paths are known here. Labels, statuses and confidences all come
+// from the live pipeline — hand-written "VERIFIED 95%" badges were exactly the
+// invented confidence this project exists to argue against.
+const PHOTO_SRC: Record<string, string> = {
+  "city.jpg": "/images/traveler-dashboard/city.jpg",
+  "m4.png": "/images/traveler-dashboard/m4.png",
+  "m7.png": "/images/traveler-dashboard/m7.png"
+};
+
+const STATUS_STYLE: Record<string, string> = {
+  VERIFIED: "bg-forest text-white",
+  USER_CONFIRMED: "bg-forest text-white",
+  INFERRED: "bg-peach text-ink",
+  UNKNOWN: "bg-sand text-slateInk",
+  CONTRADICTED: "bg-coral text-white",
+  SYNTHETIC: "bg-mist text-ink"
+};
 
 const CLIPS = ["/videos/326677_medium.mp4", "/videos/305657_medium.mp4", "/videos/326739_medium.mp4"];
 
@@ -81,14 +121,26 @@ function Section({ n, title, sub, children }: {
 }
 
 export default async function ShowcasePage() {
-  const [health, rights] = await Promise.all([
+  const post = (body: unknown): RequestInit => ({
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body)
+  });
+
+  const [health, rights, verify, near, far, evidence] = await Promise.all([
     get<Health>("/health"),
-    get<Rights>("/rights/assess", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(DELAYED_FLIGHT)
-    })
+    get<Rights>("/rights/assess", post(DELAYED_FLIGHT)),
+    get<Verify>("/trust/verify-demo"),
+    get<WeatherResult>("/planning/weather", post(WEATHER_DEMOS[0])),
+    get<WeatherResult>("/planning/weather", post(WEATHER_DEMOS[1])),
+    get<DemoEvidence>("/evidence/demo-classify")
   ]);
+
+  // Labelled here rather than in the API so the page shows which request each
+  // card came from; the temperatures themselves are entirely the worker's.
+  const weather = [near && { ...near, label: WEATHER_DEMOS[0].destination },
+                   far && { ...far, label: WEATHER_DEMOS[1].destination }]
+    .filter(Boolean) as WeatherResult[];
 
   const chains = Object.entries(health?.provider_chains ?? {}).filter(
     ([k, v]) => k !== "unavailable" && Array.isArray(v)
@@ -167,35 +219,55 @@ export default async function ShowcasePage() {
         </Section>
 
         <Section n="02" title="Evidence, and what it actually proves"
-          sub="Every claim carries a status. A photo proves what is in the frame — it does not prove where it was taken, and the classifier is expected to say so.">
-          <div className="grid gap-5 sm:grid-cols-3">
-            {EVIDENCE_PHOTOS.map((p) => (
-              <figure key={p.label} className="overflow-hidden rounded-2xl bg-card ring-1 ring-line">
-                <div className="relative aspect-[4/3]">
-                  <Image src={p.src} alt={p.label} fill sizes="(max-width: 640px) 100vw, 33vw"
-                    className="object-cover" />
-                </div>
-                <figcaption className="p-4">
-                  <div className="flex items-center justify-between">
-                    <span className="font-mono text-xs text-slateInk">{p.label}</span>
-                    <span className="rounded-full bg-forest px-2 py-0.5 font-mono text-[10px] text-white">
-                      {p.verdict} {p.pct}%
+          sub="Labels come from a vision model and statuses from Claude, computed on this deployment. A photo proves what is in the frame — it does not prove where it was taken, and the classifier is expected to say so.">
+          {evidence?.available ? (
+            <>
+              <div className="grid gap-5 sm:grid-cols-3">
+                {evidence.photos.map((p) => (
+                  <figure key={p.key} className="overflow-hidden rounded-2xl bg-card ring-1 ring-line">
+                    {PHOTO_SRC[p.key] && (
+                      <div className="relative aspect-[4/3]">
+                        <Image src={PHOTO_SRC[p.key]} alt={p.key} fill
+                          sizes="(max-width: 640px) 100vw, 33vw" className="object-cover" />
+                      </div>
+                    )}
+                    <figcaption className="p-4">
+                      <div className="flex items-center justify-between">
+                        <span className="font-mono text-xs text-slateInk">{p.key}</span>
+                        <span className="font-mono text-[10px] text-moss">{p.source}</span>
+                      </div>
+                      <p className="mt-2 text-sm leading-snug text-ink">
+                        {p.labels.slice(0, 5).join(" · ")}
+                      </p>
+                    </figcaption>
+                  </figure>
+                ))}
+              </div>
+
+              <div className="mt-5 space-y-2">
+                {evidence.claims.map((c) => (
+                  <div key={c.id} className="flex items-start gap-3 rounded-xl bg-card p-4 ring-1 ring-line">
+                    <span className={`rounded-full px-2 py-0.5 font-mono text-[10px] ${STATUS_STYLE[c.status] ?? "bg-sand"}`}>
+                      {c.status} {Math.round((c.confidence ?? 0) * 100)}%
                     </span>
+                    <p className="text-sm leading-snug text-ink">{c.text}</p>
                   </div>
-                  <p className="mt-2 text-sm leading-snug text-ink">{p.claim}</p>
-                </figcaption>
-              </figure>
-            ))}
-          </div>
-          <div className="mt-5 rounded-2xl bg-card p-5 ring-1 ring-line">
-            <p className="text-sm text-ink">
-              <span className="font-mono text-xs text-coral">UNKNOWN 30%</span>{" "}
-              — on a real run the classifier refused to assert a photo was taken in Bali.
-              Generatable moments <span className="font-mono">before</span> consent:{" "}
-              <span className="font-mono">[]</span>. After the traveller confirmed one:{" "}
-              <span className="font-mono">[&apos;c7&apos;]</span>. That empty list is the gate.
+                ))}
+              </div>
+
+              <p className="mt-4 text-xs text-slateInk">
+                Classified by {evidence.classifier} via {evidence.sources_used.join(", ")}
+                {evidence.cached ? " (cached briefly — a real model call per page load would be slow and costly)" : " (computed on this request)"}.
+                Note the low-confidence rows: the classifier refusing to assert something is
+                the feature, not a failure.
+              </p>
+            </>
+          ) : (
+            <p className="rounded-2xl bg-sand p-5 text-sm text-slateInk">
+              Live classification unavailable{evidence?.reason ? ` — ${evidence.reason}` : ""}.
+              Nothing is shown in its place rather than substituting invented verdicts.
             </p>
-          </div>
+          )}
         </Section>
 
         <Section n="03" title="Video clips become evidence"
@@ -296,22 +368,70 @@ export default async function ShowcasePage() {
         )}
 
         <Section n="07" title="Sealed and tamper-evident"
-          sub="The film and any disruption claim are signed with the same ed25519 key and written under a B2 Object Lock COMPLIANCE retention — immutable even to us.">
-          <div className="rounded-2xl bg-ink p-6 font-mono text-xs leading-relaxed text-parchment">
-            <div>[PASS] file_hash{"          "}file bytes match the sealed publish record</div>
-            <div>[PASS] signature{"          "}publish record signed by WanderOS (ed25519)</div>
-            <div>[PASS] embedded_manifest{"  "}lineage manifest present in file</div>
-            <div className="mt-3 text-coral">
-              one byte flipped → verified = False
+          sub="Signed with ed25519 and written under a B2 Object Lock COMPLIANCE retention. The output below was computed when you loaded this page — a hardcoded 'PASS' would be exactly the unverifiable claim this project argues against.">
+          {verify?.available ? (
+            <div className="rounded-2xl bg-ink p-6 font-mono text-xs leading-relaxed text-parchment">
+              {verify.checks.map((c) => (
+                <div key={c.check}>
+                  <span className={c.passed ? "text-aurora" : "text-coral"}>
+                    [{c.passed ? "PASS" : "FAIL"}]
+                  </span>{" "}
+                  <span className="inline-block w-44">{c.check}</span>
+                  <span className="text-parchment/60">{c.detail}</span>
+                </div>
+              ))}
+              <div className="mt-4 text-coral">
+                {verify.tamper_test.bytes_changed} byte flipped → verified ={" "}
+                {String(verify.tamper_test.verified_after_tamper)}
+              </div>
+              <div className="text-coral/70">{verify.tamper_test.detail}</div>
+              <div className="mt-3 text-parchment/40">{verify.note}</div>
             </div>
-            <div className="text-coral/70">HASH MISMATCH — file was modified after sealing</div>
-          </div>
+          ) : (
+            <p className="rounded-2xl bg-sand p-5 text-sm text-slateInk">
+              Live signing is unavailable on this deployment
+              {verify?.reason ? ` (${verify.reason})` : ""}. Nothing is shown in its place,
+              because a placeholder here would defeat the purpose.
+            </p>
+          )}
           <p className="mt-4 text-sm text-slateInk">
             Sealing proves <em>when</em> a record was made and that it has not changed since.
             It does not prove the contents were true when written — the capsule says so in its
             own text, because overclaiming here would undo the point of it.
           </p>
         </Section>
+
+        {weather && (
+          <Section n="08" title="Real weather, and an honest label on it"
+            sub="Fetched live from Open-Meteo for the dates below. A forecast and a climate estimate are different claims, and most travel tools blur them — this never does.">
+            <div className="grid gap-4 sm:grid-cols-2">
+              {weather.map((w) => (
+                <div key={w.label} className="rounded-2xl bg-card p-5 ring-1 ring-line">
+                  <div className="flex items-baseline justify-between">
+                    <span className="font-display text-xl text-ink">{w.place?.name ?? w.label}</span>
+                    <span className={`rounded-full px-2 py-0.5 font-mono text-[10px] ${
+                      w.weather.kind === "forecast" ? "bg-forest text-white" : "bg-peach text-ink"}`}>
+                      {w.weather.kind}
+                    </span>
+                  </div>
+                  <p className="mt-2 font-mono text-2xl text-forest">
+                    {w.weather.min_temp_c}°–{w.weather.max_temp_c}°C
+                  </p>
+                  <p className="mt-1 text-sm text-slateInk">
+                    {w.weather.wet_days} wet day{w.weather.wet_days === 1 ? "" : "s"} ·{" "}
+                    {w.weather.rain_expected ? "pack for rain" : "rain unlikely"}
+                  </p>
+                  <p className="mt-2 text-xs italic text-slateInk">{w.weather.basis}</p>
+                </div>
+              ))}
+            </div>
+            <p className="mt-4 text-xs text-slateInk">
+              A trip five months out cannot be forecast at all. Presenting a climate average
+              as a forecast is the same category of error as presenting a generated scene as a
+              photograph — a plausible number where a real one should be.
+            </p>
+          </Section>
+        )}
 
       </div>
     </main>
