@@ -21,6 +21,7 @@ Design constraints that matter here:
 """
 from __future__ import annotations
 
+import io
 from typing import Any
 
 # Included only when explicitly kept. Everything else defaults to excluded.
@@ -115,6 +116,50 @@ def filter_for_audience(scenes: list[dict], sensitivity: dict[str, Any],
             continue
         out.append(scene)
     return out
+
+
+class ScrubFailed(RuntimeError):
+    """GPS could not be removed. Callers MUST NOT publish the image."""
+
+
+def scrub_image_gps(data: bytes) -> bytes:
+    """Physically remove GPS from image bytes before anything leaves the system.
+
+    Filtering coordinates out of our own metadata is not enough — the JPEG itself
+    carries them, so a shared photo leaks a home or hotel pin regardless of what
+    our database says. piexif (MIT) rewrites the EXIF block, dropping the GPS IFD
+    while keeping the orientation and timestamp a viewer needs.
+
+    Raises rather than returning the original on failure. A privacy function that
+    silently no-ops is worse than no function at all: the caller believes the
+    image is clean and publishes it. (This is not hypothetical — the first
+    version swallowed piexif's "give a 3rd argument" ValueError and handed back
+    GPS-bearing bytes.)
+    """
+    import piexif
+
+    try:
+        exif = piexif.load(data)
+    except Exception:
+        return data  # no parsable EXIF: nothing to leak, nothing to strip
+
+    if not exif.get("GPS"):
+        return data
+
+    exif["GPS"] = {}
+    out = io.BytesIO()
+    try:
+        # piexif.insert needs an explicit output when fed bytes; without it, it
+        # raises rather than returning a value.
+        piexif.insert(piexif.dump(exif), data, out)
+    except Exception as exc:
+        raise ScrubFailed(f"could not strip GPS: {type(exc).__name__}: {exc}") from exc
+
+    scrubbed = out.getvalue()
+    # Verify rather than trust — this is the last gate before bytes go public.
+    if piexif.load(scrubbed).get("GPS"):
+        raise ScrubFailed("GPS still present after scrub")
+    return scrubbed
 
 
 def strip_precise_location(exif: dict, sensitivity: dict[str, Any]) -> dict:

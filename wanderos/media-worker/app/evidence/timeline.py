@@ -58,7 +58,47 @@ def _dms_to_deg(dms, ref) -> float | None:
 
 def extract_meta(key: str, data: bytes) -> PhotoMeta:
     meta = PhotoMeta(key=key)
+
+    # exifread (BSD-3) first: it parses the GPS sub-IFD and maker notes that
+    # Pillow's getexif() silently drops, and it reads HEIC — which matters
+    # because that is the iPhone default, and losing the timestamp on an iPhone
+    # photo would silently break the timeline for most travellers.
     try:
+        import exifread
+
+        tags = exifread.process_file(io.BytesIO(data), details=False)
+        if tags:
+            for field in ("EXIF DateTimeOriginal", "Image DateTime", "EXIF DateTimeDigitized"):
+                if field in tags:
+                    try:
+                        meta.taken_at = datetime.strptime(str(tags[field]), "%Y:%m:%d %H:%M:%S")
+                        break
+                    except ValueError:
+                        continue
+            lat_t, lon_t = tags.get("GPS GPSLatitude"), tags.get("GPS GPSLongitude")
+            if lat_t and lon_t:
+                def _deg(t, ref) -> float | None:
+                    try:
+                        d, m, s = [float(v.num) / float(v.den) for v in t.values]
+                        val = d + m / 60 + s / 3600
+                        return -val if str(ref) in ("S", "W") else val
+                    except Exception:
+                        return None
+
+                meta.lat = _deg(lat_t, tags.get("GPS GPSLatitudeRef", "N"))
+                meta.lon = _deg(lon_t, tags.get("GPS GPSLongitudeRef", "E"))
+            if meta.taken_at or meta.lat is not None:
+                return meta
+    except Exception:
+        pass  # fall through to Pillow rather than lose the photo entirely
+
+    try:
+        try:
+            import pillow_heif
+
+            pillow_heif.register_heif_opener()  # HEIC/HEIF -> Pillow
+        except Exception:
+            pass
         img = Image.open(io.BytesIO(data))
         exif = img.getexif()
         if not exif:
