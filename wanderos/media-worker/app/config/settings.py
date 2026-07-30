@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     b2_bucket_provenance: str = "wanderos-provenance"
     b2_bucket_intermediate: str = "wanderos-intermediate"
     b2_bucket_logs: str = "wanderos-logs"
+    aviationstack_api_key: str = ""     # live flight status (features 21/24)
+    opensky_client_id: str = ""
+    opensky_client_secret: str = ""
     parquet_dir: str = "/tmp/wanderos/parquet"   # queryable run history (ParquetSink)
     otel_enabled: bool = False                   # add an OTelTracer rung when true
     step_max_retries: int = 2                    # resumes a prediction, never re-submits
