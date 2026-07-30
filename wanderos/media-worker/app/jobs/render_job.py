@@ -22,6 +22,7 @@ from genblaze import Manifest
 from app.config.settings import settings
 from app.media import pipelines
 from app.media.compose import SceneClip, compose_film
+from app.media.provenance import Gap
 from app.media.scenes import fetch_asset, work_dir, render_scene
 from app.trust.sealing import seal_film, verify_film
 from app.runtime.events import emit_job_event
@@ -123,9 +124,31 @@ def _run(job: dict) -> None:
 
         _set(job, "composing")
         by_idx = {s["idx"]: s for s in scenes}
+
+        def _origin(result: dict) -> str:
+            source = by_idx[result["idx"]].get("source", "original")
+            if result["synthetic"]:
+                return "recreated"
+            return {"original": "photo", "parallax": "parallax"}.get(source, "photo")
+
         clips = [SceneClip(path=Path(r["clip"]),
                            narration_line=by_idx[r["idx"]].get("narrationLine", ""),
-                           synthetic=r["synthetic"]) for r in rendered]
+                           synthetic=r["synthetic"],
+                           origin=_origin(r)) for r in rendered]
+
+        # Scenes the system REFUSED to fabricate become cards in the film instead
+        # of being deleted. This is the differentiator, and it was being thrown
+        # away before anyone could see it.
+        gaps = []
+        for r in results:
+            if not r.get("skipped"):
+                continue
+            scene = by_idx.get(r["idx"], {})
+            claim = (scene.get("title") or scene.get("narrationLine")
+                     or scene.get("genPrompt") or "A moment from your itinerary")
+            gaps.append(Gap.rejected(claim) if r.get("dropped") else Gap.no_consent(claim))
+        if gaps:
+            emit_job_event(job_id, "film.gaps_shown", {"count": len(gaps)})
 
         narrated = _narrate_scenes(job_id, trip_id, clips)
         emit_job_event(job_id, "narration.ready", {"scenes": len(clips), "narrated": narrated})
@@ -135,7 +158,8 @@ def _run(job: dict) -> None:
                      else _narration_audio(job_id, trip_id, storyboard.get("narrationFull", "")))
 
         film_result = compose_film(clips, narration, work_dir(job_id) / "film.mp4",
-                                   title=storyboard.get("title", "A Trip to Remember"))
+                                   title=storyboard.get("title", "A Trip to Remember"),
+                                   gaps=gaps)
         film = film_result.path
         job["film"] = {
             "duration_sec": film_result.duration,
@@ -143,6 +167,7 @@ def _run(job: dict) -> None:
             "captions_vtt": str(film_result.captions_vtt) if film_result.captions_vtt else None,
             "burned_captions": film_result.burned_captions,
             "scenes_narrated": f"{narrated}/{len(clips)}",
+            "gaps_shown": len(gaps),
             # Surfaced, not swallowed: the traveller is told what degraded.
             "notices": film_result.notices,
         }

@@ -46,6 +46,10 @@ class SceneClip:
     synthetic: bool  # burns an "AI-recreated scene" disclosure (the trust thesis)
     narration_path: Path | None = None  # per-scene voiceover, laid at scene start
     duration: float = 0.0  # 0 = probe it
+    origin: str = ""  # photo | clip | parallax | recreated — drives the badge
+
+    def resolved_origin(self) -> str:
+        return self.origin or ("recreated" if self.synthetic else "photo")
 
     def resolved_duration(self) -> float:
         if self.duration > 0:
@@ -148,13 +152,30 @@ def _finalize(video: Path, audio: Path | None, srt: Path | None, out: Path,
     return out
 
 
+def _card_clip(png: Path, out: Path, *, seconds: float, fps: int, size: str) -> Path:
+    """Turn a still card into a silent clip that concat can splice in."""
+    run_ffmpeg(["-loop", "1", "-i", str(png), "-t", f"{seconds}", "-r", str(fps),
+                "-vf", f"scale={size}", "-pix_fmt", "yuv420p", str(out)],
+               stage="card-clip")
+    return out
+
+
 def compose_film(
     scenes: list[SceneClip], narration_audio: Path | None, out: Path,
     *, title: str, fps: int = 24, size: str = "1280x720",
     music: Path | None = None,
+    gaps: list = None,  # list[provenance.Gap] — moments we declined to fabricate
+    verification: dict | None = None,  # {sealed_sha256, verify_url} for the end card
 ) -> FilmResult:
     """Assemble the film. `narration_audio` is a whole-film fallback for callers
-    that have not yet moved to per-scene narration."""
+    that have not yet moved to per-scene narration.
+
+    `gaps` are rendered as full-frame cards INSIDE the film rather than dropped.
+    A generator that declines to invent your past is the product; deleting the
+    evidence of that decision left a slideshow behind.
+    """
+    from app.media.provenance import Gap, badge_png, gap_card_png, verification_card_png
+
     work = out.parent
     width, _height = (int(x) for x in size.split("x"))
     notices: list[str] = []
@@ -171,7 +192,6 @@ def compose_film(
     )
     prepared.append(card)
 
-    ai_png = text_png("AI-recreated scene", work / "t_ai.png", size=22, fg=(255, 209, 102, 255))
     cues: list[Cue] = []
     at = TITLE_SECONDS
 
@@ -181,8 +201,11 @@ def compose_film(
         labeled = work / f"scene_{i:02d}.mp4"
         inputs = ["-i", str(scene.path), "-i", str(sub_png)]
         graph = f"[0]scale={size},fps={fps}[v0];[v0][1]overlay=(W-w)/2:H-h-28"
-        if scene.synthetic:
-            inputs += ["-i", str(ai_png)]
+        # Origin badge, always — "this really happened" and "we generated this
+        # with your permission" must never be confusable at a glance.
+        badge = badge_png(scene.resolved_origin(), work / f"t_badge{i}.png")
+        if badge is not None:
+            inputs += ["-i", str(badge)]
             graph += "[v1];[v1][2]overlay=24:24"
         run_ffmpeg([*inputs, "-filter_complex", graph, "-an", "-pix_fmt", "yuv420p", str(labeled)],
                    stage=f"label-scene-{i}")
@@ -193,6 +216,32 @@ def compose_film(
         if scene.narration_line.strip():
             cues.append(Cue(text=scene.narration_line, start=at, end=at + seconds))
         at += seconds
+
+    # The refusals. These are authored beats, not error notices — the whole
+    # differentiator is that a viewer SEES the system decline to fabricate.
+    gap_seconds = 4.0
+    for g, gap in enumerate(gaps or []):
+        png = gap_card_png(gap, work / f"t_gap{g}.png")
+        clip = _card_clip(png, work / f"gap_{g:02d}.mp4",
+                          seconds=gap_seconds, fps=fps, size=size)
+        prepared.append(clip)
+        cues.append(Cue(text=f"{gap.claim} — left empty, unconfirmed", start=at,
+                        end=at + gap_seconds))
+        at += gap_seconds
+
+    if verification:
+        stats = {
+            "real": sum(1 for s in scenes if s.resolved_origin() != "recreated"),
+            "recreated": sum(1 for s in scenes if s.resolved_origin() == "recreated"),
+            "refused": len(gaps or []),
+        }
+        png = verification_card_png(
+            sealed_sha256=verification.get("sealed_sha256", "—"),
+            verify_url=verification.get("verify_url", ""), stats=stats,
+            out=work / "t_verify.png")
+        prepared.append(_card_clip(png, work / "card_verify.mp4",
+                                   seconds=6.0, fps=fps, size=size))
+        at += 6.0
 
     concat_list = work / "concat.txt"
     concat_list.write_text("".join(f"file '{p.name}'\n" for p in prepared))

@@ -215,3 +215,47 @@ def job_verify(job_id: str):
         raise HTTPException(404, "no sealed film for this job")
     record = job["publish_record"]
     return verify_film(Path(record["sealed_path"]), record)
+
+
+# ── Passenger rights (features 22/23) ──
+
+class RightsReq(BaseModel):
+    departure_airport: str
+    arrival_airport: str
+    departure_country: str
+    arrival_country: str
+    carrier_country: str
+    scheduled_arrival: str          # ISO-8601
+    actual_arrival: str | None = None
+    departure_latlon: tuple[float, float] | None = None
+    arrival_latlon: tuple[float, float] | None = None
+    cause: str = "unknown"
+    disruption: str = "delay"
+    notice_days: int | None = None
+    fare_paid: float | None = None
+    baggage: dict | None = None
+
+
+@app.post("/rights/assess")
+def rights_assess(req: RightsReq):
+    """What a disrupted traveller is plausibly owed, with the article cited.
+
+    Deterministic — no model is consulted. See app/rights/passenger_rights.py
+    for why compensation and the right to care are reported separately.
+    """
+    from datetime import datetime
+
+    from app.rights.passenger_rights import Flight, assess
+
+    flight = Flight(
+        departure_airport=req.departure_airport, arrival_airport=req.arrival_airport,
+        departure_country=req.departure_country, arrival_country=req.arrival_country,
+        carrier_country=req.carrier_country,
+        scheduled_arrival=datetime.fromisoformat(req.scheduled_arrival),
+        actual_arrival=datetime.fromisoformat(req.actual_arrival) if req.actual_arrival else None,
+        departure_latlon=tuple(req.departure_latlon) if req.departure_latlon else None,
+        arrival_latlon=tuple(req.arrival_latlon) if req.arrival_latlon else None,
+        cause=req.cause, disruption=req.disruption,
+        notice_days=req.notice_days, fare_paid=req.fare_paid,
+    )
+    return assess(flight, baggage=req.baggage)
