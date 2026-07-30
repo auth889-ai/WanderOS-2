@@ -48,6 +48,53 @@ def _smoothstep(progress: str) -> str:
     return f"(3*pow({progress},2)-2*pow({progress},3))"
 
 
+def subject_anchor(photo: Path) -> tuple[float, float]:
+    """Where the interesting part of the photo is, as fractions of width/height.
+
+    A camera move anchored on the geometric centre is what makes automated
+    slideshows feel mechanical: it pushes into empty sky as readily as into a
+    face. A photographer pushes toward the subject.
+
+    This is a spectral-residual saliency map — a cheap, well-established
+    frequency-domain method that needs no model weights and no torch. It is not
+    depth estimation and does not pretend to be; it answers the much smaller
+    question of which region carries the visual information, which is all the
+    camera move needs.
+
+    Returns (0.5, 0.5) unchanged if anything fails: a centred move is the
+    correct fallback, never a crash.
+    """
+    try:
+        import cv2
+        import numpy as np
+
+        image = cv2.imread(str(photo), cv2.IMREAD_GRAYSCALE)
+        if image is None:
+            return 0.5, 0.5
+        small = cv2.resize(image, (64, 64)).astype(np.float32)
+
+        spectrum = np.fft.fft2(small)
+        log_amplitude = np.log(np.abs(spectrum) + 1e-8)
+        phase = np.angle(spectrum)
+        # The residual after removing the averaged (predictable) spectrum is what
+        # stands out from the scene's general statistics.
+        residual = log_amplitude - cv2.blur(log_amplitude, (3, 3))
+        saliency = np.abs(np.fft.ifft2(np.exp(residual + 1j * phase))) ** 2
+        saliency = cv2.GaussianBlur(saliency, (9, 9), 2.5)
+
+        total = saliency.sum()
+        if total <= 0:
+            return 0.5, 0.5
+        ys, xs = np.mgrid[0:saliency.shape[0], 0:saliency.shape[1]]
+        cx = float((saliency * xs).sum() / total) / saliency.shape[1]
+        cy = float((saliency * ys).sum() / total) / saliency.shape[0]
+        # Clamped: an anchor at the very edge leaves no room to move without
+        # running off the frame, which looks like a mistake rather than a choice.
+        return min(max(cx, 0.3), 0.7), min(max(cy, 0.3), 0.7)
+    except Exception:
+        return 0.5, 0.5
+
+
 def ken_burns(
     photo: Path,
     out: Path,
@@ -61,6 +108,7 @@ def ken_burns(
     crf: int = DEFAULT_CRF,
     preset: str = DEFAULT_PRESET,
     seed: int | None = None,
+    anchor: tuple[float, float] | None = None,
 ) -> Path:
     """Render a still as a smooth, eased camera move.
 
@@ -76,16 +124,23 @@ def ken_burns(
     frames = max(2, int(round(seconds * fps)))
     work_w, work_h = width * SUPERSAMPLE, height * SUPERSAMPLE
 
+    # Push toward the subject, not the geometric centre.
+    ax, ay = anchor if anchor is not None else subject_anchor(photo)
+
     # Absolute frame number -> 0..1, then eased. Never accumulative.
     t = f"(on/{frames - 1})"
     eased = _smoothstep(t)
 
+    # Crop origin that keeps (ax, ay) at the same place in frame as zoom changes.
+    anchored_x = f"(iw*{ax:.4f}-(iw/zoom)*{ax:.4f})"
+    anchored_y = f"(ih*{ay:.4f}-(ih/zoom)*{ay:.4f})"
+
     if direction == "in":
         z = f"(1+{zoom - 1:.4f}*{eased})"
-        x, y = "iw/2-(iw/zoom/2)", "ih/2-(ih/zoom/2)"
+        x, y = anchored_x, anchored_y
     elif direction == "out":
         z = f"({zoom:.4f}-{zoom - 1:.4f}*{eased})"
-        x, y = "iw/2-(iw/zoom/2)", "ih/2-(ih/zoom/2)"
+        x, y = anchored_x, anchored_y
     else:
         # A pan holds a constant zoom and slides the window, so there is room to
         # travel without leaving the frame.
@@ -93,13 +148,13 @@ def ken_burns(
         span_x = f"(iw-iw/zoom)"
         span_y = f"(ih-ih/zoom)"
         if direction == "left":
-            x, y = f"{span_x}*(1-{eased})", "ih/2-(ih/zoom/2)"
+            x, y = f"{span_x}*(1-{eased})", anchored_y
         elif direction == "right":
-            x, y = f"{span_x}*{eased}", "ih/2-(ih/zoom/2)"
+            x, y = f"{span_x}*{eased}", anchored_y
         elif direction == "up":
-            x, y = "iw/2-(iw/zoom/2)", f"{span_y}*(1-{eased})"
+            x, y = anchored_x, f"{span_y}*(1-{eased})"
         else:
-            x, y = "iw/2-(iw/zoom/2)", f"{span_y}*{eased}"
+            x, y = anchored_x, f"{span_y}*{eased}"
 
     graph = (
         # Cover the frame at working resolution, then crop to exact size so
