@@ -69,12 +69,26 @@ class Violation:
 
 
 def travel_minutes(a: Activity, b: Activity) -> float | None:
-    """Straight-line travel estimate between two activities."""
+    """Real routed travel time between two activities.
+
+    Uses the actual street network rather than straight-line distance, which
+    understates city hops by around 30% — and underestimating travel is exactly
+    how an itinerary becomes unexecutable.
+    """
     if None in (a.lat, a.lon, b.lat, b.lon):
         return None
-    km = great_circle_km(a.lat, a.lon, b.lat, b.lon)
-    speed = MODE_SPEED_KMH.get(b.mode_from_previous, MODE_SPEED_KMH["transit"])
-    return (km / speed) * 60
+    from app.planning.routing import leg
+
+    return leg(a.lat, a.lon, b.lat, b.lon, mode=b.mode_from_previous).minutes
+
+
+def travel_leg(a: Activity, b: Activity):
+    """The full routed leg, including where each number came from."""
+    if None in (a.lat, a.lon, b.lat, b.lon):
+        return None
+    from app.planning.routing import leg
+
+    return leg(a.lat, a.lon, b.lat, b.lon, mode=b.mode_from_previous)
 
 
 def validate_day(
@@ -127,15 +141,19 @@ def validate_day(
         # The no-teleportation rule.
         if i > 0:
             prev = ordered[i - 1]
-            minutes = travel_minutes(prev, act)
+            routed = travel_leg(prev, act)
+            minutes = routed.minutes if routed else None
             gap = (act.start - prev.end).total_seconds() / 60
             if minutes is not None:
                 needed = minutes + buffer_min
                 if gap < needed:
+                    source = ("real street routing" if routed.distance_source == "osrm"
+                              else "estimated distance (router unreachable)")
                     violations.append(Violation(
                         "no_teleportation", "blocking", act.name,
-                        f"{gap:.0f} min after '{prev.name}' ends, but the hop needs "
-                        f"~{minutes:.0f} min by {act.mode_from_previous} "
+                        f"{gap:.0f} min after '{prev.name}' ends, but the hop is "
+                        f"{routed.distance_km:.2f} km by {act.mode_from_previous} "
+                        f"[{source}] needing ~{minutes:.0f} min "
                         f"+ {buffer_min} min buffer = {needed:.0f} min",
                         f"start at {(prev.end + timedelta(minutes=needed)):%H:%M} or later"))
             elif gap < buffer_min:
@@ -165,8 +183,9 @@ def validate_day(
     for i in range(1, len(ordered)):
         if ordered[i].mode_from_previous == "walk":
             a, b = ordered[i - 1], ordered[i]
-            if None not in (a.lat, a.lon, b.lat, b.lon):
-                walked += great_circle_km(a.lat, a.lon, b.lat, b.lon)
+            routed = travel_leg(a, b)
+            if routed is not None:
+                walked += routed.distance_km
     cap = MAX_WALKING_KM_PER_DAY.get(mobility, 8.0)
     if walked > cap:
         violations.append(Violation(

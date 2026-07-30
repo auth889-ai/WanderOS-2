@@ -110,6 +110,20 @@ Do NOT name or guess the location — describing what is visible is the task.
  "apparent_season": "summer|winter|spring|autumn|unclear",
  "recognised_place": null or "name if you genuinely recognise it, else null"}"""
 
+VISION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "water_colour": {"type": ["string", "null"]},
+        "terrain": {"type": "array", "items": {"type": "string"}},
+        "built_density": {"type": ["string", "null"]},
+        "vegetation": {"type": ["string", "null"]},
+        "crowd_level": {"type": ["string", "null"]},
+        "apparent_season": {"type": ["string", "null"]},
+        "recognised_place": {"type": ["string", "null"]},
+    },
+    "required": ["terrain"],
+}
+
 # Visible attributes -> catalogue attributes.
 VISION_ATTRS = {
     "turquoise": "turquoise_water", "beach": "beach", "mountains": "mountains",
@@ -134,11 +148,14 @@ def read_image(image_bytes: bytes) -> Dream:
     confidently and sometimes wrongly, and a trip planned around that is a trip
     planned around a hallucination.
     """
-    from app.reasoning.claude import describe
+    from app.reasoning.claude import complete
 
     try:
-        raw = describe(image_bytes, VISION_PROMPT)
-        payload = json.loads(raw[raw.find("{"): raw.rfind("}") + 1])
+        # Same bug as documents.py had: describe() takes no arguments. This call
+        # raised on every invocation and the broad except returned an empty
+        # Dream, so image-based matching silently never worked at all.
+        payload = complete(VISION_PROMPT, image_jpeg=image_bytes,
+                           schema=VISION_SCHEMA, max_tokens=600)
     except Exception:
         return Dream()
 
