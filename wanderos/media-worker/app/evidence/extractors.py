@@ -21,11 +21,13 @@ depends on a cloud entitlement being granted.
 """
 from __future__ import annotations
 
+import base64
 import io
 import json
 import time
 import urllib.request
 from functools import lru_cache
+from pathlib import Path
 from typing import Any
 
 from app.config.settings import settings
@@ -197,12 +199,85 @@ def label_photo(url: str) -> dict[str, Any]:
         return _fail(f"no vision route (openai failed; rekognition: {type(exc).__name__})")
 
 
+VIDEO_SUFFIXES = (".mp4", ".mov", ".m4v", ".avi", ".webm", ".mkv", ".3gp")
+
+
+def _looks_like_video(asset: dict) -> bool:
+    kind = (asset.get("kind") or "").lower()
+    if kind in ("video", "clip"):
+        return True
+    if kind in ("document", "voice", "photo"):
+        return False
+    name = (asset.get("key") or asset.get("url") or "").lower().split("?")[0]
+    return name.endswith(VIDEO_SUFFIXES)
+
+
+def read_clip(url: str, *, key: str) -> dict[str, Any]:
+    """Split an uploaded video into shots and label a frame from each.
+
+    Video was previously routed to `label_photo`, which sent an MP4 to a vision
+    model and got nothing back — so every clip a traveller uploaded landed in
+    `degraded` and contributed nothing to the story. A clip is often the best
+    footage of the trip, and it is real, which no generated scene ever is.
+
+    Each shot's representative frame is labelled through the same vision path as
+    a photo, so downstream code (gap detection, story planning, curation) needs
+    no knowledge that this came from video.
+    """
+    import tempfile
+
+    from app.evidence.clips import best_shots, detect_shots
+
+    data = _fetch(url, limit=200_000_000)
+    if data is None:
+        return _fail("clip unreachable")
+
+    work = Path(tempfile.mkdtemp(prefix="wanderos-clip-"))
+    local = work / (Path(key).name or "clip.mp4")
+    local.write_bytes(data)
+
+    evidence = detect_shots(local, work_dir=work)
+    if not evidence.available:
+        return _fail(evidence.reason or "no usable shots in clip")
+
+    shots: list[dict[str, Any]] = []
+    for shot in best_shots(evidence, limit=4):
+        entry: dict[str, Any] = {
+            "index": shot.index, "start": shot.start_sec,
+            "end": shot.end_sec, "duration": shot.duration,
+            "frame_path": str(shot.frame_path),
+        }
+        # A frame lives on local disk, so it is inlined as a data URI rather
+        # than uploaded somewhere just to be described.
+        try:
+            frame_bytes = shot.frame_path.read_bytes()
+            uri = "data:image/jpeg;base64," + base64.b64encode(frame_bytes).decode()
+            entry.update({k: v for k, v in label_photo(uri).items() if k != "available"})
+        except Exception as exc:
+            entry["reason"] = f"frame not labelled: {type(exc).__name__}"
+        shots.append(entry)
+
+    labelled = [s for s in shots if s.get("labels")]
+    return {
+        "available": True,
+        "source": "scenedetect+vision",
+        "duration_sec": evidence.duration_sec,
+        "shots": shots,
+        # Promoted so a clip reads like a photo to everything downstream.
+        "labels": [l for s in labelled for l in (s.get("labels") or [])][:20],
+        "people": max((s.get("people") or 0) for s in shots) if shots else 0,
+        "setting": next((s.get("setting") for s in labelled if s.get("setting")), None),
+        "time_of_day": next((s.get("time_of_day") for s in labelled if s.get("time_of_day")), None),
+    }
+
+
 def extract_all(assets: list[dict], *, job_id: str) -> dict[str, Any]:
     """Run the right extractor per asset kind. Partial-tolerant by design.
 
-    ``assets`` items: {"key": str, "url": str, "kind": "photo"|"document"|"voice"}
+    ``assets`` items: {"key": str, "url": str, "kind": "photo"|"document"|"voice"|"video"}
     """
-    bundle: dict[str, Any] = {"documents": [], "voice": [], "photos": [], "degraded": []}
+    bundle: dict[str, Any] = {"documents": [], "voice": [], "photos": [], "clips": [],
+                              "degraded": []}
     for i, asset in enumerate(assets):
         kind, url, key = asset.get("kind"), asset.get("url"), asset.get("key", f"asset-{i}")
         if not url:
@@ -211,6 +286,10 @@ def extract_all(assets: list[dict], *, job_id: str) -> dict[str, Any]:
             result, target = read_document(url), bundle["documents"]
         elif kind == "voice":
             result, target = transcribe_voice(url, job_name=f"{job_id}-{i}"), bundle["voice"]
+        elif _looks_like_video(asset):
+            # Checked before the photo fallback: an unlabelled .mp4 would
+            # otherwise be handed to a vision model as if it were a still.
+            kind, result, target = "video", read_clip(url, key=key), bundle["clips"]
         else:
             result, target = label_photo(url), bundle["photos"]
         result["key"] = key
@@ -219,7 +298,9 @@ def extract_all(assets: list[dict], *, job_id: str) -> dict[str, Any]:
             bundle["degraded"].append({"key": key, "kind": kind, "reason": result.get("reason")})
     bundle["complete"] = not bundle["degraded"]
     bundle["sources_used"] = sorted({
-        r["source"] for group in ("documents", "voice", "photos")
+        r["source"] for group in ("documents", "voice", "photos", "clips")
         for r in bundle[group] if r.get("available")
     })
+    bundle["real_footage_shots"] = sum(len(c.get("shots", [])) for c in bundle["clips"]
+                                       if c.get("available"))
     return bundle

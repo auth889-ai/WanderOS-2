@@ -61,13 +61,18 @@ def health():
     """Judge-facing capability report — every claim on this page is probed live."""
     from app.reasoning.claude import describe as claude_route
     from app.media.provider_catalog import chain_summary
+    from app.runtime.capabilities import snapshot
 
+    caps = snapshot()
     return {
-        "ok": True,
+        # Not just "is the process up" — a worker missing piexif is running fine
+        # and cannot safely publish, so `ok` reflects capability, not liveness.
+        "ok": not caps["blocking"],
         "tier": settings.pipeline_tier,
         "b2_configured": settings.b2_configured,
         "reasoner": claude_route(),
         "provider_chains": chain_summary(),
+        "capabilities": caps,
     }
 
 
