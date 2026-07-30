@@ -152,17 +152,19 @@ def _finalize(video: Path, audio: Path | None, srt: Path | None, out: Path,
     return out
 
 
-def _card_clip(png: Path, out: Path, *, seconds: float, fps: int, size: str) -> Path:
+def _card_clip(png: Path, out: Path, *, seconds: float, fps: int, size: str,
+               crf: int = 18) -> Path:
     """Turn a still card into a silent clip that concat can splice in."""
     run_ffmpeg(["-loop", "1", "-i", str(png), "-t", f"{seconds}", "-r", str(fps),
-                "-vf", f"scale={size}", "-pix_fmt", "yuv420p", str(out)],
+                "-vf", f"scale={size}:flags=lanczos,format=yuv420p",
+                "-c:v", "libx264", "-crf", str(crf), "-preset", "slow", str(out)],
                stage="card-clip")
     return out
 
 
 def compose_film(
     scenes: list[SceneClip], narration_audio: Path | None, out: Path,
-    *, title: str, fps: int = 24, size: str = "1280x720",
+    *, title: str, fps: int = 30, size: str = "1920x1080",
     music: Path | None = None,
     gaps: list = None,  # list[provenance.Gap] — moments we declined to fabricate
     verification: dict | None = None,  # {sealed_sha256, verify_url} for the end card
@@ -187,7 +189,8 @@ def compose_film(
     run_ffmpeg(
         ["-f", "lavfi", "-i", f"color=c=0x0f172a:s={size}:d={TITLE_SECONDS}:r={fps}",
          "-i", str(title_png),
-         "-filter_complex", "[0][1]overlay=(W-w)/2:(H-h)/2", "-pix_fmt", "yuv420p", str(card)],
+         "-filter_complex", "[0][1]overlay=(W-w)/2:(H-h)/2",
+         "-c:v", "libx264", "-crf", "18", "-preset", "slow", "-pix_fmt", "yuv420p", str(card)],
         stage="title-card",
     )
     prepared.append(card)
@@ -200,14 +203,16 @@ def compose_film(
                            max_width=int(width * 0.86))
         labeled = work / f"scene_{i:02d}.mp4"
         inputs = ["-i", str(scene.path), "-i", str(sub_png)]
-        graph = f"[0]scale={size},fps={fps}[v0];[v0][1]overlay=(W-w)/2:H-h-28"
+        graph = f"[0]scale={size}:flags=lanczos,fps={fps}[v0];[v0][1]overlay=(W-w)/2:H-h-28"
         # Origin badge, always — "this really happened" and "we generated this
         # with your permission" must never be confusable at a glance.
         badge = badge_png(scene.resolved_origin(), work / f"t_badge{i}.png")
         if badge is not None:
             inputs += ["-i", str(badge)]
             graph += "[v1];[v1][2]overlay=24:24"
-        run_ffmpeg([*inputs, "-filter_complex", graph, "-an", "-pix_fmt", "yuv420p", str(labeled)],
+        run_ffmpeg([*inputs, "-filter_complex", graph, "-an",
+                    "-c:v", "libx264", "-crf", "18", "-preset", "slow",
+                    "-pix_fmt", "yuv420p", str(labeled)],
                    stage=f"label-scene-{i}")
         prepared.append(labeled)
 

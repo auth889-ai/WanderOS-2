@@ -238,3 +238,17 @@ def models() -> dict:
         "video_fallbacks": [l.model for l in video[1:]],
         "tts": audio[0].model if audio else "mock-tts-v1",
     }
+
+
+def video_available() -> bool:
+    """Whether ANY video provider can serve a generation.
+
+    Previously scenes checked `settings.gmi_api_key` directly, so a deployment
+    with Sora, Veo and Luma Ray configured — three working video providers —
+    still refused to generate a single video and fell back to still motion on
+    every scene. The chain exists precisely so no one provider is load-bearing;
+    the gate was quietly reintroducing that assumption.
+    """
+    if settings.pipeline_tier == "mock":
+        return False
+    return bool(_video_links())

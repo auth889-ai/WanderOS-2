@@ -261,11 +261,26 @@ def build_enhance_image(job_id: str, photo_key: str, prompt: str) -> Pipeline:
     )
 
 
+# Durations the strongest video providers accept. Asking for 5s made Sora
+# reject the request outright ("Must be one of {8, 4, 12}") and the chain fell
+# through to a weaker rung — losing the best model to a number, not a fault.
+VIDEO_DURATIONS = (4, 8, 12)
+
+
+def snap_duration(seconds: float) -> int:
+    """Nearest provider-accepted duration."""
+    return min(VIDEO_DURATIONS, key=lambda d: abs(d - seconds))
+
+
 def build_animate_scene(
-    job_id: str, image_key: str, motion_prompt: str, duration: int = 5, aspect_ratio: str = "16:9"
+    job_id: str, image_key: str, motion_prompt: str, duration: int = 8, aspect_ratio: str = "16:9"
 ) -> Pipeline:
     m = models()
-    kwargs = {} if settings.pipeline_tier == "mock" else {"image": presign(image_key)}
+    # An empty image_key is a TEXT-to-video request, not an error. Luma Ray is
+    # text-to-video only, so this is its normal path — presigning "" raised
+    # ParamValidationError and took the whole render with it.
+    kwargs = ({} if (settings.pipeline_tier == "mock" or not image_key)
+              else {"image": presign(image_key)})
     return (
         Pipeline(f"animate-{job_id}", tenant_id=job_id, chain=True, moderation=TravelModerationHook())
         .cache(_cache())
@@ -276,7 +291,7 @@ def build_animate_scene(
             fallback_models=m["video_fallbacks"],
             modality=Modality.VIDEO,
             prompt=motion_prompt,
-            duration=duration,
+            duration=snap_duration(duration),
             aspect_ratio=aspect_ratio,
             **kwargs,
         )

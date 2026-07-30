@@ -113,21 +113,21 @@ def _placeholder_clip(out: Path, seconds: int, label: str) -> Path:
 
 
 def _still_clip(photo: Path, out: Path, seconds: int) -> Path:
-    _ffmpeg(["-loop", "1", "-i", str(photo), "-t", str(seconds),
-             "-vf", "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2",
-             "-pix_fmt", "yuv420p", str(out)], "still-clip")
-    return out
+    from app.media.motion import still
+
+    return still(photo, out, seconds=seconds)
 
 
-def _parallax_clip(photo: Path, out: Path, seconds: int) -> Path:
-    """The free ffmpeg motion path: slow push-in zoompan on the real photo."""
-    frames = seconds * 24
-    _ffmpeg(["-loop", "1", "-i", str(photo),
-             "-vf", (f"scale=2560:1440:force_original_aspect_ratio=increase,"
-                     f"crop=2560:1440,zoompan=z='min(zoom+0.0008,1.25)':d={frames}"
-                     f":x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=1280x720:fps=24"),
-             "-t", str(seconds), "-pix_fmt", "yuv420p", str(out)], "parallax")
-    return out
+def _parallax_clip(photo: Path, out: Path, seconds: int, *, seed: int | None = None) -> Path:
+    """Eased, supersampled camera move on a real photo.
+
+    Delegates to media/motion.py, which fixed the visible shake: the old filter
+    accumulated zoom frame-to-frame (compounding rounding error) and supersampled
+    only 2x, so the integer crop origin snapped a half-pixel every frame.
+    """
+    from app.media.motion import ken_burns
+
+    return ken_burns(photo, out, seconds=seconds, seed=seed)
 
 
 def _record(trip_id: str, key: str, doc: dict) -> None:
@@ -161,9 +161,13 @@ def _generated_clip(job_id: str, trip_id: str, scene: dict, image_key: str | Non
     seconds = int(scene.get("durationSec", 5))
     models = pipelines.models()
     attempts: list[dict] = []
-    # Video generation needs GMI Cloud (Bedrock has no ACTIVE video model). Without
-    # it the scene still gets real AI generation — Bedrock image + ffmpeg parallax.
-    video_available = bool(settings.gmi_api_key) and settings.pipeline_tier != "mock"
+    # ANY configured video provider counts — Sora, Kling, Seedance, Veo or Luma.
+    # This used to check the GMI key alone, so a deployment with three working
+    # video providers generated no video at all and every scene became still
+    # motion. That is the whole reason the output looked like a slideshow.
+    from app.media.provider_catalog import video_available as _video_available
+
+    video_available = _video_available()
     state = {"n": 0, "feedback": None,
              "model": models["video"] if video_available else models["image"]}
 
