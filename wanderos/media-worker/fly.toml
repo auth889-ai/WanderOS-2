@@ -1,0 +1,45 @@
+# Media worker on Fly.io.
+# Chosen over Vercel/Lambda because the composer shells out to ffmpeg for every
+# scene, and over a bare PaaS because renders need real CPU and a writable /tmp.
+
+app = "wanderos-worker"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  PORT = "8000"
+  PIPELINE_TIER = "dev"
+  # Keep B2 in the same region family as the app to avoid paying latency on
+  # every asset fetch during a render.
+  B2_REGION = "us-east-005"
+
+[http_service]
+  internal_port = 8000
+  force_https = true
+  # A render holds the machine for minutes; stopping it mid-compose would lose
+  # the work, so the worker stays up rather than scaling to zero.
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [http_service.concurrency]
+    type = "requests"
+    # Renders are CPU-bound on ffmpeg. Letting many land on one machine makes
+    # every one of them slow instead of queueing honestly.
+    soft_limit = 4
+    hard_limit = 8
+
+[[http_service.checks]]
+  grace_period = "45s"
+  interval = "30s"
+  method = "GET"
+  timeout = "15s"
+  path = "/health"
+
+[[vm]]
+  # ffmpeg encoding is the bottleneck; 1GB is not enough to compose 720p with
+  # Pillow overlays in parallel.
+  size = "performance-2x"
+  memory = "4gb"
