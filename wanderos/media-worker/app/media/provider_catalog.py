@@ -146,7 +146,12 @@ def _video_links() -> list[Link]:
              lambda: _lazy("genblaze_openai", "SoraProvider")()(
                  api_key=settings.openai_api_key, retry_policy=_retry()))
     if settings.gmi_api_key:
-        for model in ("kling-image2video-v2.1-master", "seedance-2-0-260128"):
+        # Model list taken from the official Backblaze GMI sample
+        # (genblaze-gmicloud-pipeline). Each extra rung is free to declare and
+        # only costs anything if the ones above it fail — which is the point of
+        # a chain: depth is insurance, not expense.
+        for model in ("kling-image2video-v2.1-master", "seedance-2-0-260128",
+                      "wan2.6-i2v", "pixverse-v5.6-i2v"):
             _add(links, "gmi-cloud", model,
                  lambda: _lazy("genblaze_gmicloud", "GMICloudVideoProvider")()(
                      api_key=settings.gmi_api_key))
