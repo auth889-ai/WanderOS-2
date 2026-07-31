@@ -9,7 +9,7 @@ Endpoints (Phase 2 surface; the orchestrating LangGraph calls these):
 """
 from __future__ import annotations
 
-from fastapi import FastAPI
+from fastapi import FastAPI, File, UploadFile
 from pydantic import BaseModel, Field
 
 from app.config.settings import settings
@@ -443,3 +443,156 @@ def evidence_demo_classify():
     }
     _DEMO_CACHE.update({"payload": payload, "at": _time.time()})
     return {**payload, "cached": False}
+
+
+# ── Interactive playground endpoints ──
+# 33 features existed as modules nobody could touch. These make them usable.
+
+class ItineraryReq(BaseModel):
+    date: str                       # YYYY-MM-DD
+    mobility: str = "moderate"
+    daily_budget: float | None = None
+    activities: list[dict]          # {name,start:"HH:MM",end,lat,lon,mode,cost,closed_weekdays?}
+
+
+@app.post("/planning/itinerary/validate")
+def planning_itinerary(req: ItineraryReq):
+    """Check a day against reality — real street routing, opening hours, meals."""
+    from datetime import datetime
+
+    from app.planning.itinerary import Activity, validate_day
+
+    day = datetime.fromisoformat(req.date)
+
+    def when(hhmm: str) -> datetime:
+        h, m = hhmm.split(":")
+        return day.replace(hour=int(h), minute=int(m))
+
+    acts = [Activity(
+        name=a["name"], start=when(a["start"]), end=when(a["end"]),
+        lat=a.get("lat"), lon=a.get("lon"),
+        mode_from_previous=a.get("mode", "transit"),
+        cost=float(a.get("cost") or 0),
+        step_free=a.get("step_free"),
+        closed_weekdays=set(a.get("closed_weekdays") or []),
+        requires_ticket=bool(a.get("requires_ticket")),
+        ticket_booked=bool(a.get("ticket_booked")),
+    ) for a in req.activities]
+    return validate_day(acts, mobility=req.mobility, daily_budget=req.daily_budget)
+
+
+class FairnessReq(BaseModel):
+    members: list[dict]             # {name, preferences:{tag:weight}, hard_constraints:[], budget_cap?}
+    plans: list[dict]               # {name, tags:{tag:score}, violates:[], cost_per_person}
+    min_acceptable: float = 0.5
+
+
+@app.post("/planning/fairness")
+def planning_fairness(req: FairnessReq):
+    """Pick the plan that treats its worst-off member best, not the best average."""
+    from app.planning.fairness import Member, Plan, negotiate
+
+    members = [Member(name=m["name"], preferences=m.get("preferences") or {},
+                      hard_constraints=set(m.get("hard_constraints") or []),
+                      budget_cap=m.get("budget_cap")) for m in req.members]
+    plans = [Plan(name=p["name"], tags=p.get("tags") or {},
+                  violates=set(p.get("violates") or []),
+                  cost_per_person=float(p.get("cost_per_person") or 0)) for p in req.plans]
+    return negotiate(members, plans, min_acceptable=req.min_acceptable)
+
+
+class DreamReq(BaseModel):
+    text: str = ""
+    month: int | None = None
+    max_nightly: float | None = None
+
+
+@app.post("/planning/dream")
+def planning_dream(req: DreamReq):
+    """Describe a feeling, get destinations — with seasonality as a hard filter."""
+    from app.planning.dream import Dream, match
+
+    return match(Dream(text=req.text, month=req.month, max_nightly=req.max_nightly))
+
+
+class AccessReq(BaseModel):
+    lat: float
+    lon: float
+    radius_m: int = 600
+
+
+@app.post("/planning/accessibility")
+def planning_accessibility(req: AccessReq):
+    """Real crowdsourced access data, graded by who said so."""
+    from app.planning.accessibility import merge_facts, nearby_access
+
+    facts = merge_facts(nearby_access(req.lat, req.lon, radius_m=req.radius_m))
+    return {
+        "count": len(facts),
+        "facts": [f.as_dict() for f in facts[:40]],
+        "step_free": sum(1 for f in facts if f.value == "step_free"),
+        "not_accessible": sum(1 for f in facts if f.value == "not_accessible"),
+        "partial": sum(1 for f in facts if f.value == "partial"),
+        "note": "OpenStreetMap (ODbL) — contributed by people who were physically there.",
+    }
+
+
+class SensoryReq(BaseModel):
+    activities: list[str]
+    walking_km: float = 0.0
+    transfers: int = 0
+    quiet_breaks: int = 0
+    tolerance: str = "moderate"
+
+
+@app.post("/planning/sensory")
+def planning_sensory(req: SensoryReq):
+    """Whether a day is survivable, not just walkable."""
+    from app.planning.accessibility import DayPlan, sensory_budget
+
+    return sensory_budget(DayPlan(activities=req.activities, walking_km=req.walking_km,
+                                  transfers=req.transfers, quiet_breaks=req.quiet_breaks),
+                          tolerance=req.tolerance)
+
+
+class ReadinessReq(BaseModel):
+    departure: str
+    return_date: str | None = None
+    destination_country: str = ""
+    nationality: str = ""
+    documents: list[dict]           # {kind, holder_name?, expires?, ...}
+
+
+@app.post("/planning/readiness")
+def planning_readiness(req: ReadinessReq):
+    """Passport, name-match and insurance checks. Entry rules are never decided."""
+    from datetime import date as _date
+
+    from app.planning.readiness import Document, check_readiness
+
+    def parse(value):
+        return _date.fromisoformat(value) if value else None
+
+    docs = [Document(kind=d.get("kind", "unknown"),
+                     holder_name=d.get("holder_name", ""),
+                     expires=parse(d.get("expires")),
+                     issuing_country=d.get("issuing_country", "")) for d in req.documents]
+    return check_readiness(docs, departure=parse(req.departure),
+                           return_date=parse(req.return_date),
+                           destination_country=req.destination_country,
+                           nationality=req.nationality)
+
+
+@app.post("/planning/readiness/from-photo")
+async def readiness_from_photo(file: UploadFile = File(...)):
+    """Upload a passport photo; get the fields read and checked."""
+    from app.planning.documents import read_document_image
+
+    doc = read_document_image(await file.read())
+    return {"kind": doc.kind, "holder_name": doc.holder_name, "number": doc.number,
+            "issued": str(doc.issued) if doc.issued else None,
+            "expires": str(doc.expires) if doc.expires else None,
+            "issuing_country": doc.issuing_country,
+            "confidence": doc.source_confidence,
+            "note": ("Fields below 0.55 confidence are dropped rather than kept — a wrong "
+                     "expiry silently passes the six-month check.")}
