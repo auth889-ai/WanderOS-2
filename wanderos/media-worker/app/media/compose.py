@@ -166,6 +166,7 @@ def compose_film(
     scenes: list[SceneClip], narration_audio: Path | None, out: Path,
     *, title: str, fps: int = 30, size: str = "1920x1080",
     music: Path | None = None,
+    route_clip: Path | None = None,  # animated map — the sequence people share
     gaps: list = None,  # list[provenance.Gap] — moments we declined to fabricate
     verification: dict | None = None,  # {sealed_sha256, verify_url} for the end card
 ) -> FilmResult:
@@ -197,6 +198,16 @@ def compose_film(
 
     cues: list[Cue] = []
     at = TITLE_SECONDS
+
+    # The animated map goes straight after the title. It establishes the SHAPE of
+    # the trip before any photograph, which is what stops a film reading as a
+    # slideshow — and it is the sequence people screenshot and share.
+    if route_clip is not None and Path(route_clip).exists():
+        prepared.append(Path(route_clip))
+        route_seconds = probe_duration(Path(route_clip))
+        cues.append(Cue(text="The route, drawn from your photos",
+                        start=at, end=at + route_seconds))
+        at += route_seconds
 
     for i, scene in enumerate(scenes):
         sub_png = text_png(scene.narration_line, work / f"t_sub{i}.png", size=26,

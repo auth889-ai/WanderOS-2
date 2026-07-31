@@ -277,14 +277,14 @@ def route_scene(journey: Journey, out_dir, *, seconds: int = 4, title: str = "")
     """Render the route as a film scene — a slow push-in, not a static card."""
     from pathlib import Path
 
-    from app.media.compose import _run_ffmpeg
+    from app.media.ffmpeg import run_ffmpeg
 
     out_dir = Path(out_dir)
     if not journey.stops:
         return None
     png = render_route_png(journey, out_dir / "route.png", title=title)
     clip = out_dir / "route.mp4"
-    _run_ffmpeg(["-loop", "1", "-i", str(png), "-t", str(seconds),
+    run_ffmpeg(["-loop", "1", "-i", str(png), "-t", str(seconds),
                  "-vf", (f"scale=1280:720,fps=24,"
                          f"zoompan=z='min(zoom+0.0005,1.12)':d={seconds * 24}:s=1280x720"),
                  "-pix_fmt", "yuv420p", str(clip)], stage="route-scene")
