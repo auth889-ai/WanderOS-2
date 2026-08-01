@@ -179,3 +179,22 @@ class TestEveryCommitmentAppears:
                         disruption=C.propagate(graph, origin="flight", delay_minutes=20))
         board = P.protect(board, "hotel", action="late key confirmed", by="guardian")
         assert next(n for n in board["nodes"] if n["key"] == "hotel")["state"] == P.PURPLE
+
+
+class TestHeadlineNeverContradictsTheBoard:
+    def test_a_protected_board_does_not_say_nothing_needs_you(self):
+        """Applying protections after the headline was written left the board
+        saying "healthy, nothing needs you" while showing a protected node.
+        The headline and the states must be produced together."""
+        board = P.build(trip(**{T.FLIGHT: {"flight_iata": "BA1", "delay_minutes": 95}}))
+        board = P.protect(board, "flight", action="rebooked onto BA3", by="guardian")
+        assert board["overall"] == P.PURPLE
+        assert "Nothing needs you" not in board["headline"]
+        assert "protecting" in board["headline"].lower()
+
+    def test_overall_and_headline_agree_after_every_action(self):
+        board = P.build(trip(**{T.FLIGHT: {"flight_iata": "BA1", "delay_minutes": 95}}))
+        for key in ("flight",):
+            board = P.protect(board, key, action="handled", by="guardian")
+        states = {n["state"] for n in board["nodes"]}
+        assert board["overall"] in states

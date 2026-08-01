@@ -67,38 +67,18 @@ async function buildBoard(tripId: string) {
       end_date: calendarDate(trip.end_date),
       flight,
       commitments,
-      dependencies
+      dependencies,
+      protections: protections.map((p) => ({
+        commitment_key: p.commitment_key,
+        action: p.action,
+        acted_by: p.acted_by
+      }))
     }),
     cache: "no-store"
   });
   if (!response.ok) throw new Error(`worker returned ${response.status}`);
 
   const board = await response.json();
-
-  // Replay recorded protections so a node that Guardian has already acted on
-  // comes back purple. Without this the board would forget every action on
-  // reload and re-alarm the traveller about something already handled.
-  for (const p of protections) {
-    const node = board.nodes?.find(
-      (n: { key: string }) => n.key === p.commitment_key
-    );
-    if (node) {
-      node.protections.push({
-        action: p.action,
-        by: p.acted_by,
-        at: p.created_at,
-        reversible_until: p.reversible_until
-      });
-      node.protected = true;
-      node.state = "purple";
-    }
-  }
-  if (protections.length) {
-    const rank: Record<string, number> = { red: 0, amber: 1, purple: 2, green: 3 };
-    board.overall = (board.nodes ?? [])
-      .map((n: { state: string }) => n.state)
-      .sort((a: string, b: string) => rank[a] - rank[b])[0] ?? "green";
-  }
 
   return { ...board, trip_id: tripId, title: trip.title };
 }

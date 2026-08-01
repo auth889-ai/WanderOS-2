@@ -793,6 +793,10 @@ class PulseReq(BaseModel):
     entitlement: dict = {}
     commitments: list[dict] = []
     dependencies: list[dict] = []
+    # Actions Guardian has already taken. Passed in so the board is built ONCE
+    # with them applied — replaying them afterwards left the headline saying
+    # "nothing needs you" while the ribbon showed a protected node.
+    protections: list[dict] = []
 
 
 @app.post("/journey/pulse")
@@ -838,7 +842,14 @@ def journey_pulse(req: PulseReq):
     if delay and "flight" in graph.commitments:
         disruption = C.propagate(graph, origin="flight", delay_minutes=delay)
 
-    return P.build(twin, graph=graph, disruption=disruption)
+    board = P.build(twin, graph=graph, disruption=disruption)
+    for record in req.protections:
+        key = record.get("commitment_key") or record.get("key", "")
+        action = (record.get("action") or "").strip()
+        if key and action:
+            board = P.protect(board, key, action=action,
+                              by=record.get("acted_by", "guardian"))
+    return board
 
 
 class ProtectReq(BaseModel):
