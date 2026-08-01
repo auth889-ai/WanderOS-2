@@ -140,11 +140,33 @@ def _image_links() -> list[Link]:
 
 
 def _video_links() -> list[Link]:
+    """Order matters more than membership.
+
+    A rung that is certain to fail still costs a network round-trip and a
+    timeout before the chain moves on. The GMI account is out of credit — every
+    GMI call returns 402 — so four GMI rungs sitting AHEAD of working AWS and
+    Google providers meant a Sora failure burned four guaranteed failures before
+    reaching anything alive.
+
+    Funded providers first: OpenAI, then Google, then AWS (which runs on
+    existing credits). GMI last, so it costs nothing until everything else is
+    exhausted and it can be re-enabled by topping up rather than by a code change.
+    """
     links: list[Link] = []
     if settings.openai_api_key:
         _add(links, "openai-sora", "sora-2",
              lambda: _lazy("genblaze_openai", "SoraProvider")()(
                  api_key=settings.openai_api_key, retry_policy=_retry()))
+    if settings.gemini_api_key:
+        _add(links, "google-veo", "veo-3.0-generate-001",
+             lambda: _lazy("genblaze_google", "VeoProvider")()(
+                 api_key=settings.gemini_api_key, retry_policy=_retry()))
+    # Luma runs on AWS credits, so it is the cheapest working rung here.
+    if _aws_ready() and settings.aws_staging_bucket:
+        from app.media.providers_aws import LumaRayVideoProvider
+
+        _add(links, "aws-luma", "luma.ray-v2:0",
+             lambda: LumaRayVideoProvider(retry_policy=_retry()))
     if settings.gmi_api_key:
         # Model list taken from the official Backblaze GMI sample
         # (genblaze-gmicloud-pipeline). Each extra rung is free to declare and
@@ -155,17 +177,6 @@ def _video_links() -> list[Link]:
             _add(links, "gmi-cloud", model,
                  lambda: _lazy("genblaze_gmicloud", "GMICloudVideoProvider")()(
                      api_key=settings.gmi_api_key))
-    if settings.gemini_api_key:
-        # Veo shipped alongside Imagen in genblaze-google — another free rung.
-        _add(links, "google-veo", "veo-3.0-generate-001",
-             lambda: _lazy("genblaze_google", "VeoProvider")()(
-                 api_key=settings.gemini_api_key, retry_policy=_retry()))
-    # Luma is text-to-video only, so it is the last resort for a scene built
-    # from a real photo — but it runs on AWS credits and never needs GMI funding.
-    if _aws_ready() and settings.aws_staging_bucket:
-        from app.media.providers_aws import LumaRayVideoProvider
-
-        _add(links, "aws-luma", "luma.ray-v2:0", lambda: LumaRayVideoProvider(retry_policy=_retry()))
     return links
 
 
