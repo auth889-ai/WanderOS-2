@@ -653,3 +653,37 @@ def journey_twin(req: TwinReq):
 
     report = run(tw)
     return {"report": report, "twin": tw.as_dict(), "provenance": tw.provenance()}
+
+
+class ExportReq(BaseModel):
+    trip_id: str
+    destination: str = ""
+    start: str = ""
+    end: str = ""
+    public_url: str = ""
+
+
+@app.post("/journey/export")
+def journey_export(req: ExportReq):
+    """Calendar file, map/share deep links, wallet pass.
+
+    Open formats only — no key, no partnership. A travel tool that only works
+    inside its own app has already lost.
+    """
+    import tempfile
+    from datetime import date as _date
+    from pathlib import Path as _Path
+
+    from app.journey import twin as T
+    from app.journey.enrich import run
+    from app.journey.export import bundle
+
+    tw = T.seed(req.trip_id, destination=req.destination,
+                start=_date.fromisoformat(req.start) if req.start else None,
+                end=_date.fromisoformat(req.end) if req.end else None)
+    run(tw)
+    out = bundle(tw, _Path(tempfile.mkdtemp(prefix="wanderos-export-")),
+                 public_url=req.public_url)
+    # Return the calendar inline so a caller can hand it straight to a browser.
+    out["calendar"]["ics"] = _Path(out["calendar"]["path"]).read_text()
+    return out
