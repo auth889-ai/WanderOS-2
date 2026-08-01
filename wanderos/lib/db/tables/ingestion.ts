@@ -16,6 +16,26 @@ import { getPool, queryAurora } from "../pool";
  *                                 booking updates rather than inserts
  */
 
+/**
+ * The stable key for a booking.
+ *
+ * Derived from the booking reference, never chosen by the caller. A caller
+ * picking its own key means the same reservation imported twice lands under two
+ * keys and becomes two commitments — which then both appear on the board and
+ * BOTH count toward expected loss. Observed: one 612.45 hotel presented as
+ * 1359.19 at risk.
+ *
+ * Reconciliation already matches on reference; the key must agree with it or
+ * the two disagree about what "the same booking" means.
+ */
+export function commitmentKey(kind: string, reference: string | null | undefined): string {
+  const clean = (reference ?? "").replace(/[^a-z0-9]/gi, "").toLowerCase();
+  const prefix = kind === "lodging" ? "stay" : kind;
+  // With no reference there is nothing stable to key on, so the caller's key
+  // stands — but such a booking cannot be deduplicated and should be reviewed.
+  return clean ? `${prefix}_${clean}` : "";
+}
+
 export type ImportRow = {
   id: string;
   message_id: string;

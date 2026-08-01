@@ -92,6 +92,28 @@ const CANCELLED = /\b(cancell?ed|cancellation confirm|your booking has been canc
 
 const AIRPORT_CODE = /^[A-Z]{3}$/;
 
+/**
+ * A timestamp as a calendar day, whatever shape it arrived in.
+ *
+ * Postgres hands `timestamptz` back as a JS Date through node-postgres, while
+ * everything upstream of the database deals in ISO strings. Calling .slice() on
+ * the Date throws, and coercing blindly with String() yields "Tue Aug 04 2026",
+ * which silently never matches an ISO day.
+ */
+function asDay(value: unknown): string | null {
+  if (!value) return null;
+  if (value instanceof Date) return value.toISOString().slice(0, 10);
+  const text = String(value);
+  return text.length >= 10 ? text.slice(0, 10) : null;
+}
+
+/** Full ISO form, for comparing instants rather than days. */
+function asIso(value: unknown): string {
+  if (!value) return "";
+  if (value instanceof Date) return value.toISOString();
+  return String(value);
+}
+
 function normaliseReference(value: string | null | undefined): string {
   return (value ?? "").replace(/[^A-Z0-9]/gi, "").toUpperCase();
 }
@@ -122,7 +144,7 @@ function findMatch(
   return (
     existing.find(
       (e) =>
-        e.starts_at?.slice(0, 10) === day &&
+        asDay(e.starts_at) === day &&
         (segment.number
           ? (e.label ?? "").toUpperCase().includes(segment.number.toUpperCase())
           : e.kind === (segment.kind === "lodging" ? "stay" : segment.kind))
@@ -143,8 +165,8 @@ function diff(
   const compare = (field: string, from: unknown, to: unknown) => {
     if (to == null || to === "") return; // absence is not a change
     const same =
-      field.endsWith("At") || field === "hard_deadline"
-        ? String(from ?? "").slice(0, 16) === String(to).slice(0, 16)
+      field.endsWith("At") || field === "starts_at" || field === "hard_deadline"
+        ? asIso(from).slice(0, 16) === asIso(to).slice(0, 16)
         : String(from ?? "").trim() === String(to).trim();
     if (!same) changes.push({ field, from: from ?? null, to, wouldDowngrade });
   };
