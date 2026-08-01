@@ -91,7 +91,10 @@ def _narrate_scenes(job_id: str, trip_id: str, clips: list[SceneClip]) -> int:
             emit_job_event(job_id, "narration.failed",
                            {"scene": i, "reason": f"{type(exc).__name__}: {exc}"[:200]})
 
-    with ThreadPoolExecutor(max_workers=3) as pool:
+    # Two, not three. Each narration opens its own B2 upload session, and with
+    # the score generating alongside them, five concurrent sessions were enough
+    # to make transfers fail — narration that works perfectly in isolation.
+    with ThreadPoolExecutor(max_workers=2) as pool:
         list(pool.map(narrate, enumerate(clips)))
     return sum(1 for c in clips if c.narration_path)
 
@@ -113,9 +116,36 @@ def _run(job: dict) -> None:
     try:
         _set(job, "generating")
         scenes = sorted(storyboard["scenes"], key=lambda s: s["idx"])
+
+        # Plan the camera BEFORE rendering. A cut plan computed afterwards
+        # cannot influence a single frame — it is a number that describes
+        # nothing, which is worse than not having one.
+        try:
+            from app.media.edit_director import sequence, summarise
+
+            def _planned_origin(sc: dict) -> str:
+                if sc.get("needsConsent") or sc.get("source") == "synthetic_scene":
+                    return "recreated"
+                return {"original": "photo", "parallax": "parallax"}.get(
+                    sc.get("source", "original"), "photo")
+
+            cuts = sequence([_planned_origin(sc) for sc in scenes],
+                            seed=abs(hash(job_id)) % 10_000)
+            plan = summarise(cuts)
+            job["cut_plan"] = plan
+            emit_job_event(job_id, "film.cut_planned",
+                           {"matched": plan["matched_cuts"],
+                            "directions": plan["directions"]})
+        except Exception:
+            cuts = None
+
+        directions = {sc["idx"]: (cuts[i].direction if cuts else None)
+                      for i, sc in enumerate(scenes)}
+
         with ThreadPoolExecutor(max_workers=3) as pool:
             results = list(pool.map(
-                lambda sc: render_scene(job_id, trip_id, sc, consents), scenes))
+                lambda sc: render_scene(job_id, trip_id, sc, consents,
+                                        direction=directions.get(sc["idx"])), scenes))
         rendered = [r for r in results if not r["skipped"] and r["clip"] is not None]
         if not rendered:
             raise RuntimeError("no scenes rendered (all skipped or failed)")
@@ -136,6 +166,47 @@ def _run(job: dict) -> None:
                            synthetic=r["synthetic"],
                            origin=_origin(r)) for r in rendered]
 
+        # --- Everything below was written, tested, and never actually called ---
+        #
+        # route_animation, edit_director and score existed as modules that only a
+        # throwaway script had ever invoked. A feature the real pipeline does not
+        # call is not a feature; it is a demo that happens to live in the repo.
+
+        # The route: the sequence people share, built from real photo GPS.
+        route_clip = None
+        timeline = job.get("timeline") or storyboard.get("timeline")
+        if timeline:
+            try:
+                from app.evidence.journey import build_journey
+                from app.media.route_animation import from_journey
+
+                journey = build_journey(timeline)
+                route_clip = from_journey(journey, work_dir(job_id) / "route.mp4",
+                                          title=storyboard.get("title", ""))
+                if route_clip:
+                    emit_job_event(job_id, "film.route_rendered",
+                                   {"stops": len(journey.stops),
+                                    "km": journey.total_km})
+            except Exception as exc:
+                # A missing map costs a sequence, never the film.
+                emit_job_event(job_id, "film.route_failed",
+                               {"reason": f"{type(exc).__name__}: {exc}"[:160]})
+
+        # The score. Currently unfunded (GMI is out of credit and neither AWS nor
+        # OpenAI has a music model), so this reports why rather than pretending.
+        try:
+            from app.media.score import generate as generate_score
+
+            labels = [c.narration_line for c in clips]
+            score = generate_score(job_id, trip_id, labels=labels,
+                                   work_dir=work_dir(job_id))
+            music = score.path if score.available else None
+            job["score"] = score.as_dict()
+            if not score.available:
+                emit_job_event(job_id, "film.no_music", {"reason": score.reason[:160]})
+        except Exception:
+            music = None
+
         # Scenes the system REFUSED to fabricate become cards in the film instead
         # of being deleted. This is the differentiator, and it was being thrown
         # away before anyone could see it.
@@ -154,12 +225,23 @@ def _run(job: dict) -> None:
         emit_job_event(job_id, "narration.ready", {"scenes": len(clips), "narrated": narrated})
         # Whole-film narration only as a fallback, for storyboards that carry
         # narrationFull instead of per-scene lines.
-        narration = (None if narrated
-                     else _narration_audio(job_id, trip_id, storyboard.get("narrationFull", "")))
+        #
+        # Guarded, unlike before: the per-scene calls were each wrapped but this
+        # one was bare, so when every scene failed to narrate the fallback ran
+        # unprotected and its SinkError killed the entire render. A film with no
+        # voice is a degraded film; a film that does not exist is a lost trip.
+        narration = None
+        if not narrated:
+            try:
+                narration = _narration_audio(job_id, trip_id,
+                                             storyboard.get("narrationFull", ""))
+            except Exception as exc:
+                emit_job_event(job_id, "narration.fallback_failed",
+                               {"reason": f"{type(exc).__name__}: {exc}"[:200]})
 
         film_result = compose_film(clips, narration, work_dir(job_id) / "film.mp4",
                                    title=storyboard.get("title", "A Trip to Remember"),
-                                   gaps=gaps)
+                                   route_clip=route_clip, music=music, gaps=gaps)
         film = film_result.path
         job["film"] = {
             "duration_sec": film_result.duration,

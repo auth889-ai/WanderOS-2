@@ -118,7 +118,8 @@ def _still_clip(photo: Path, out: Path, seconds: int) -> Path:
     return still(photo, out, seconds=seconds)
 
 
-def _parallax_clip(photo: Path, out: Path, seconds: int, *, seed: int | None = None) -> Path:
+def _parallax_clip(photo: Path, out: Path, seconds: int, *, seed: int | None = None,
+                   direction: str | None = None) -> Path:
     """Eased, supersampled camera move on a real photo.
 
     Delegates to media/motion.py, which fixed the visible shake: the old filter
@@ -127,7 +128,7 @@ def _parallax_clip(photo: Path, out: Path, seconds: int, *, seed: int | None = N
     """
     from app.media.motion import ken_burns
 
-    return ken_burns(photo, out, seconds=seconds, seed=seed)
+    return ken_burns(photo, out, seconds=seconds, seed=seed, direction=direction)
 
 
 def _record(trip_id: str, key: str, doc: dict) -> None:
@@ -155,7 +156,7 @@ def _first_video_asset(result) -> str | None:
 
 
 def _generated_clip(job_id: str, trip_id: str, scene: dict, image_key: str | None,
-                    out: Path) -> tuple[Path | None, list[dict]]:
+                    out: Path, *, direction: str | None = None) -> tuple[Path | None, list[dict]]:
     """hero_video / synthetic_scene path: AgentLoop(generate -> critique -> repair)."""
     idx = scene["idx"]
     seconds = int(scene.get("durationSec", 5))
@@ -238,7 +239,7 @@ def _generated_clip(job_id: str, trip_id: str, scene: dict, image_key: str | Non
         real = fetch_asset(scene.get("assetKey"), work_dir(job_id) / f"src_{idx:02d}.jpg") \
             if scene.get("assetKey") else None
         if real is not None:
-            _parallax_clip(real, out, seconds)
+            _parallax_clip(real, out, seconds, direction=direction)
         else:
             # No real photo to fall back to (a purely synthetic scene). Drop the
             # scene rather than ship something the critic rejected.
@@ -263,7 +264,7 @@ def _generated_clip(job_id: str, trip_id: str, scene: dict, image_key: str | Non
         if still is not None:
             emit_job_event(job_id, "scene.degraded.parallax",
                            {"scene": idx, "reason": "no video model available; animating generated still"})
-            _parallax_clip(still, out, seconds)
+            _parallax_clip(still, out, seconds, direction=direction)
         else:
             _placeholder_clip(out, seconds, f"scene-{idx}")
     verdicts_jsonl = "\n".join(json.dumps(a, default=str) for a in attempts)
@@ -273,8 +274,14 @@ def _generated_clip(job_id: str, trip_id: str, scene: dict, image_key: str | Non
 
 
 def render_scene(job_id: str, trip_id: str, scene: dict,
-                 consents: dict | None = None) -> dict:
-    """Returns {idx, clip (Path), synthetic, attempts, skipped}."""
+                 consents: dict | None = None, *, direction: str | None = None) -> dict:
+    """Returns {idx, clip (Path), synthetic, attempts, skipped}.
+
+    `direction` is the camera move chosen by the edit director for this scene's
+    position in the film. It has to arrive HERE, before the clip is rendered —
+    computing a cut plan after the scenes exist produces a number that describes
+    nothing.
+    """
     idx = scene["idx"]
     seconds = int(scene.get("durationSec", 5))
     source = scene.get("source", "original")
@@ -293,7 +300,7 @@ def render_scene(job_id: str, trip_id: str, scene: dict,
     if source == "original":
         _still_clip(photo, out, seconds) if photo else _placeholder_clip(out, seconds, "original")
     elif source == "parallax":
-        _parallax_clip(photo, out, seconds) if photo else _placeholder_clip(out, seconds, "parallax")
+        _parallax_clip(photo, out, seconds, direction=direction) if photo else _placeholder_clip(out, seconds, "parallax")
     else:  # gen_image / hero_video / synthetic_scene — real generation + critic loop
         out, attempts = _generated_clip(job_id, trip_id, scene,
                                         scene.get("assetKey"), out)

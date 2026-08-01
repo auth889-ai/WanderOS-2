@@ -35,14 +35,43 @@ DISCLAIMER = (
     "depends on the cause of the disruption, which the airline must establish."
 )
 
-# --- EC261/2004 -------------------------------------------------------------
-# Article 7 compensation bands, by great-circle distance to the FINAL destination.
-EC261_BANDS = [
-    # (max_km, intra_eu_only, amount_eur)
-    (1500, False, 250),
-    (3500, False, 400),
-    (float("inf"), False, 600),
-]
+# --- Regulated amounts, versioned ------------------------------------------
+#
+# These are LAW, and law has an effective date, a jurisdiction, a currency and a
+# source. Hardcoding a bare number is how this module shipped a wrong figure:
+# UK261 amounts were the EUR values relabelled as GBP, overstating long-haul
+# compensation by GBP 80. A confidently wrong compensation figure is worse than
+# no figure — someone plans a claim around it.
+#
+# Every schedule below carries where it came from and when it was last checked,
+# so a stale rule is visible rather than silent. `verified` is deliberately a
+# date, not a boolean.
+
+RULE_SCHEDULES = {
+    "EC261/2004": {
+        "currency": "EUR",
+        "effective": "2005-02-17",
+        "verified": "2026-08-01",
+        "source": "Regulation (EC) No 261/2004, Article 7",
+        # (max_km, amount). Intra-EU over 1500km is capped at the middle band.
+        "bands": [(1500, 250), (3500, 400), (float("inf"), 600)],
+        "intra_eu_cap": 400,
+    },
+    "UK261": {
+        "currency": "GBP",
+        # Set on withdrawal day and never uprated since.
+        "effective": "2020-12-31",
+        "verified": "2026-08-01",
+        "source": "UK CAA — retained Regulation 261/2004 as amended",
+        "bands": [(1500, 220), (3500, 350), (float("inf"), 520)],
+        # UK261 does NOT cap intra-territory long-haul the way EC261 does:
+        # any flight over 3,500 km pays the top band.
+        "intra_eu_cap": None,
+    },
+}
+
+# Kept for backwards compatibility with anything importing it directly.
+EC261_BANDS = [(1500, False, 250), (3500, False, 400), (float("inf"), False, 600)]
 # Article 6 delay thresholds for the right to CARE, by the same distance bands.
 EC261_CARE_HOURS = [(1500, 2), (3500, 3), (float("inf"), 4)]
 # Article 6(1)(iii)/Article 8: a 5-hour delay unlocks the right to a refund.
@@ -62,10 +91,21 @@ NOT_EXTRAORDINARY_CAUSES = {
     "late_inbound_aircraft", "scheduling",
 }
 
-# --- US DOT (14 CFR 250.5) — involuntary denied boarding, 2024 figures --------
+# --- US DOT (14 CFR 250.5) — involuntary denied boarding --------------------
+#
+# These caps are inflation-adjusted periodically by DOT, so the vintage matters
+# as much as the number. Reported alongside every amount rather than assumed
+# current.
+DOT_SCHEDULE = {
+    "effective": "2025-01-01",
+    "verified": "2026-08-01",
+    "source": "14 CFR 250.5, as periodically inflation-adjusted by US DOT",
+    "note": ("DOT uprates these caps; confirm against eCFR before relying on the "
+             "figure for a claim."),
+}
 DOT_DENIED_BOARDING = {
-    "domestic": [(1, 0, 0), (2, 2.0, 775), (float("inf"), 4.0, 1550)],
-    "international": [(1, 0, 0), (4, 2.0, 775), (float("inf"), 4.0, 1550)],
+    "domestic": [(1, 0, 0), (2, 2.0, 1075), (float("inf"), 4.0, 2150)],
+    "international": [(1, 0, 0), (4, 2.0, 1075), (float("inf"), 4.0, 2150)],
 }
 # 2024 DOT rule: automatic refunds once a change crosses these thresholds.
 DOT_REFUND_HOURS = {"domestic": 3, "international": 6}
@@ -143,12 +183,27 @@ def _ec261_applies(f: Flight) -> tuple[bool, str]:
     return False, "neither departs the EU/UK nor arrives on an EU/UK carrier"
 
 
-def _band_amount(distance_km: float, intra_eu: bool) -> int:
-    if distance_km <= 1500:
-        return 250
-    if intra_eu or distance_km <= 3500:
-        return 400
-    return 600
+def _band_amount(distance_km: float, intra_eu: bool, regime: str = "EC261/2004") -> int:
+    """Compensation for this distance under this regime's own schedule.
+
+    The regimes genuinely differ, and not only in currency: EC261 caps an
+    intra-EU flight at the middle band however long it is, while UK261 pays the
+    top band on anything over 3,500 km.
+    """
+    schedule = RULE_SCHEDULES.get(regime, RULE_SCHEDULES["EC261/2004"])
+    amount = next(a for max_km, a in schedule["bands"] if distance_km <= max_km)
+    cap = schedule.get("intra_eu_cap")
+    if intra_eu and cap is not None:
+        return min(amount, cap)
+    return amount
+
+
+def rule_provenance(regime: str) -> dict:
+    """Where a figure came from and when it was last checked."""
+    schedule = RULE_SCHEDULES.get(regime, RULE_SCHEDULES["EC261/2004"])
+    return {"regime": regime, "currency": schedule["currency"],
+            "effective": schedule["effective"], "verified": schedule["verified"],
+            "source": schedule["source"]}
 
 
 def _care_threshold_hours(distance_km: float) -> int:
@@ -185,7 +240,7 @@ def assess_ec261(f: Flight) -> list[Entitlement]:
 
     intra_eu = ((f.departure_country in _EU_EEA or f.departure_country == "GB")
                 and (f.arrival_country in _EU_EEA or f.arrival_country == "GB"))
-    amount = _band_amount(distance, intra_eu)
+    amount = _band_amount(distance, intra_eu, regime)
     delay = f.delay_hours()
 
     # --- Compensation ---
@@ -326,5 +381,12 @@ def assess(flight: Flight, *, baggage: dict[str, Any] | None = None) -> dict:
         "headline_amount": money or None,
         # Everything the traveller must physically do, deduplicated, in one list.
         "next_steps": sorted({e.action_required for e in claimable if e.action_required}),
+        # Where each regulated figure came from and when it was last checked. A
+        # stale rule should be visible, not silent.
+        "rule_provenance": [rule_provenance(r) for r in
+                            sorted({e.regime for e in entitlements
+                                    if e.regime in RULE_SCHEDULES})],
+        "us_dot_schedule": DOT_SCHEDULE if any(
+            e.regime == "US DOT" for e in entitlements) else None,
         "disclaimer": DISCLAIMER,
     }
