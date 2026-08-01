@@ -20,6 +20,7 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORKER_DIR="$ROOT/media-worker"
 URL_FILE="$ROOT/PUBLIC_URL.txt"
+WORKER_URL_FILE="$ROOT/PUBLIC_WORKER_URL.txt"
 LOG_DIR="${TMPDIR:-/tmp}/wanderos"
 NEXT_PORT=5050
 WORKER_PORT=8000
@@ -45,6 +46,30 @@ start_worker() {
 start_next() {
   say "starting next on :$NEXT_PORT"
   ( cd "$ROOT" && nohup npx next start -p "$NEXT_PORT" >"$LOG_DIR/next.log" 2>&1 & )
+}
+
+start_worker_tunnel() {
+  say "opening tunnel for the worker on :$WORKER_PORT"
+  : >"$LOG_DIR/worker-tunnel.log"
+  nohup cloudflared tunnel --url "http://localhost:$WORKER_PORT" \
+    --no-autoupdate >"$LOG_DIR/worker-tunnel.log" 2>&1 &
+
+  for _ in $(seq 1 30); do
+    sleep 2
+    local url
+    url=$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' "$LOG_DIR/worker-tunnel.log" | head -1)
+    if [ -n "$url" ]; then
+      if [ "$(head -1 "$WORKER_URL_FILE" 2>/dev/null)" != "$url" ]; then
+        { echo "$url"; echo ""; echo "# Media worker, public. Written $(date '+%Y-%m-%d %H:%M:%S')."
+          echo "# Set MEDIA_WORKER_URL to this when deploying the app anywhere"
+          echo "# other than this machine."; } >"$WORKER_URL_FILE"
+        say "WORKER URL: $url"
+      fi
+      return 0
+    fi
+  done
+  say "worker tunnel did not report a hostname — will retry"
+  return 1
 }
 
 start_tunnel() {
@@ -93,6 +118,7 @@ current_tunnel_url() {
 cleanup() {
   say "stopping"
   pkill -f "cloudflared tunnel --url http://localhost:$NEXT_PORT" 2>/dev/null
+  pkill -f "cloudflared tunnel --url http://localhost:$WORKER_PORT" 2>/dev/null
   exit 0
 }
 trap cleanup INT TERM
@@ -101,6 +127,7 @@ alive "$WORKER_PORT" /health || start_worker
 alive "$NEXT_PORT" / || start_next
 sleep 12
 start_tunnel
+start_worker_tunnel
 
 say "supervising — Ctrl-C to stop. URL is always in PUBLIC_URL.txt"
 
@@ -109,6 +136,9 @@ while true; do
 
   alive "$WORKER_PORT" /health || { say "worker down"; start_worker; sleep 8; }
   alive "$NEXT_PORT" /        || { say "next down";   start_next;   sleep 10; }
+
+  pgrep -f "cloudflared tunnel --url http://localhost:$WORKER_PORT" >/dev/null \
+    || { say "worker tunnel down"; start_worker_tunnel; }
 
   url=$(current_tunnel_url)
   if [ -z "$url" ] || ! pgrep -f "cloudflared tunnel --url http://localhost:$NEXT_PORT" >/dev/null; then

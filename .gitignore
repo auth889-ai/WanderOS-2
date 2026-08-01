@@ -159,3 +159,4 @@ wanderos/media-worker/.cache/
 top/
 
 save_doc/wanderos/PUBLIC_URL.txt
+wanderos/PUBLIC_WORKER_URL.txt
