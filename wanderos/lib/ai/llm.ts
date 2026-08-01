@@ -1,5 +1,6 @@
 import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
 import { ChatOpenAI } from "@langchain/openai";
+import { ChatBedrockConverse } from "@langchain/aws";
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
 
 /**
@@ -20,7 +21,7 @@ import type { BaseChatModel } from "@langchain/core/language_models/chat_models"
  *   "safety"    careful policy/safety review -> trust & safety (Claude via OpenRouter)
  */
 export type ModelTier = "flash" | "pro" | "reasoning" | "extract" | "safety";
-export type Provider = "gemini" | "openai" | "openrouter" | "groq";
+export type Provider = "gemini" | "openai" | "openrouter" | "groq" | "bedrock";
 
 type TierConfig = { provider: Provider; model: string; temperature: number; maxTokens?: number };
 
@@ -70,7 +71,10 @@ const PROVIDER_KEY: Record<Provider, () => string | undefined> = {
   gemini: () => env("GEMINI_API_KEY") || env("GOOGLE_GENERATIVE_AI_API_KEY"),
   openai: () => env("OPENAI_API_KEY"),
   openrouter: () => env("OPENROUTER_API_KEY"),
-  groq: () => env("GROQ_API_KEY")
+  groq: () => env("GROQ_API_KEY"),
+  // Bedrock authenticates with an IAM key pair, not a single API key. The
+  // access key id is what we check for; the SDK reads the secret itself.
+  bedrock: () => env("AWS_ACCESS_KEY_ID")
 };
 
 const cache = new Map<string, BaseChatModel>();
@@ -79,6 +83,22 @@ function build(cfg: TierConfig): BaseChatModel {
   const apiKey = PROVIDER_KEY[cfg.provider]();
   if (!apiKey) {
     throw new Error(`No API key for provider "${cfg.provider}". Set the matching *_API_KEY in .env.local.`);
+  }
+
+  if (cfg.provider === "bedrock") {
+    // Bedrock runs in its own region: the model catalogue differs per region and
+    // BEDROCK_REGION is frequently not the account's default AWS_REGION.
+    //
+    // The model id must be an INFERENCE PROFILE id ("us." or "global." prefix),
+    // not the bare foundation-model id that list_foundation_models returns.
+    // Passing the bare id fails with a bare 404 that says nothing about why.
+    return new ChatBedrockConverse({
+      model: cfg.model,
+      region: env("BEDROCK_REGION") || env("AWS_REGION") || "us-east-1",
+      temperature: cfg.temperature,
+      maxRetries: 2,
+      ...(cfg.maxTokens ? { maxTokens: cfg.maxTokens } : {})
+    });
   }
 
   if (cfg.provider === "gemini") {

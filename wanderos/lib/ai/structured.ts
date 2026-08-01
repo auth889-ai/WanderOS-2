@@ -53,6 +53,32 @@ function repairMissingStrings(value: unknown, error: z.ZodError): unknown {
   return clone;
 }
 
+/**
+ * Get the text out of a LangChain response.
+ *
+ * Providers disagree about the shape: Gemini and the OpenAI-compatible ones
+ * return a plain string, while Bedrock's Converse API returns an ARRAY of
+ * content blocks. JSON.stringify-ing that array yields
+ * `[{"type":"text","text":"{...}"}]` — valid JSON that parses cleanly into
+ * entirely the wrong object, so the failure reads as "your schema is wrong"
+ * rather than "you read the envelope instead of the letter".
+ */
+function textOf(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((block) =>
+        typeof block === "string"
+          ? block
+          : typeof (block as { text?: unknown })?.text === "string"
+            ? (block as { text: string }).text
+            : ""
+      )
+      .join("");
+  }
+  return JSON.stringify(content);
+}
+
 export async function invokeStructured<T>(
   schema: z.ZodType<T>,
   prompt: string,
@@ -69,7 +95,7 @@ export async function invokeStructured<T>(
     const full = `${system ? system + "\n\n" : ""}${prompt}\n\nReturn ONLY valid JSON. No markdown, no commentary.${correction}`;
 
     const response = await model.invoke(full);
-    const raw = typeof response.content === "string" ? response.content : JSON.stringify(response.content);
+    const raw = textOf(response.content);
 
     let parsedObj: unknown;
     try {
@@ -127,7 +153,7 @@ export async function invokeStructuredVision<T>(
     ];
 
     const response = await model.invoke([new HumanMessage({ content })]);
-    const raw = typeof response.content === "string" ? response.content : JSON.stringify(response.content);
+    const raw = textOf(response.content);
 
     let parsedObj: unknown;
     try {
