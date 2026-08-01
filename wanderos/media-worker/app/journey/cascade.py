@@ -103,6 +103,12 @@ def _risk(delay_minutes: float, slack_minutes: float, uncertainty_minutes: float
 
 BAND = ((0.66, "red"), (0.33, "amber"), (0.0, "green"))
 
+# Below this, a commitment is monitored rather than flagged. Not hidden — it
+# still appears under `absorbed` with its actual probability — but a product
+# that calls one-in-fifteen "at risk" trains people to ignore it, and then the
+# genuine red is ignored too.
+ATTENTION = 0.10
+
 
 def _band(risk: float) -> str:
     return next(name for threshold, name in BAND if risk >= threshold)
@@ -159,12 +165,14 @@ def propagate(graph: Graph, *, origin: str, delay_minutes: float,
             slack = edge.usable_slack
             risk = _risk(inherited_delay, slack, uncertainty_minutes) * reach_probability
 
-            if risk < 0.05:
-                # The chain stops here. Say so — knowing a delay is contained is
-                # as useful as knowing it is not.
+            if risk < ATTENTION:
+                # The chain stops here. Say so, WITH the probability — knowing a
+                # delay is contained is as useful as knowing it is not, and
+                # showing the number keeps this from being a silent dismissal.
                 absorbed.append({
                     "commitment": target.label,
-                    "why": (f"{inherited_delay:.0f} min delay fits inside "
+                    "risk": round(risk, 3),
+                    "why": (f"{inherited_delay:.0f} min delay against "
                             f"{slack:.0f} min of usable slack"),
                     "slack_minutes": round(slack, 1),
                 })

@@ -707,3 +707,44 @@ def planning_destinations(req: DestinationReq):
         return compare(req.names, req.wanted)
     return {"destinations": [d.as_dict() for d in
                             (enrich(n) for n in req.names) if d]}
+
+
+class CascadeReq(BaseModel):
+    commitments: list[dict]
+    dependencies: list[dict]
+    origin: str
+    delay_minutes: float
+    uncertainty_minutes: float = 15.0
+
+
+@app.post("/journey/cascade")
+def journey_cascade(req: CascadeReq):
+    """What breaks NEXT — the domino chain, not the alert.
+
+    Every tracker says "flight delayed". This says which of the rest of the day
+    is gone, what it costs, and what is merely contained.
+    """
+    from datetime import datetime
+
+    from app.journey.cascade import Commitment, Graph, propagate
+
+    def when(v):
+        return datetime.fromisoformat(v) if v else None
+
+    graph = Graph()
+    for raw in req.commitments:
+        graph.add(Commitment(
+            key=raw["key"], label=raw.get("label", raw["key"]),
+            kind=raw.get("kind", "booking"), starts=when(raw.get("starts")),
+            value=raw.get("value"), currency=raw.get("currency", "GBP"),
+            refundable=raw.get("refundable", True),
+            hard_deadline=when(raw.get("hard_deadline")),
+            consequence=raw.get("consequence", "")))
+    for raw in req.dependencies:
+        graph.depends(raw["downstream"], on=raw["upstream"],
+                      slack_minutes=raw.get("slack_minutes", 0),
+                      transfer_minutes=raw.get("transfer_minutes", 0),
+                      note=raw.get("note", ""))
+
+    return propagate(graph, origin=req.origin, delay_minutes=req.delay_minutes,
+                     uncertainty_minutes=req.uncertainty_minutes)
