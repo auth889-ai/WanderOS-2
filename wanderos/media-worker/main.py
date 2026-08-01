@@ -890,3 +890,114 @@ def disruption_flight_status(req: FlightStatusReq):
     payload = status.as_dict() if hasattr(status, "as_dict") else dict(status.__dict__)
     payload["live"] = True
     return payload
+
+
+class RescueFilmReq(BaseModel):
+    trip_id: str
+    commitment_key: str = "flight"
+    with_media: bool = True
+
+
+@app.post("/media/rescue-film")
+def media_rescue_film(req: RescueFilmReq):
+    """Render the film of a rescue, read from the DATABASE.
+
+    Takes a trip and a commitment, loads the persisted action and its cascade,
+    and builds the reel. Nothing is passed in but identifiers — a caller cannot
+    supply a rescue that did not happen.
+    """
+    import os
+    from pathlib import Path
+
+    import psycopg
+
+    from app.journey import cascade as C
+    from app.media.rescue_film import build
+
+    url = os.getenv("DATABASE_URL", "")
+    if not url:
+        return {"error": "DATABASE_URL is not configured"}
+
+    with psycopg.connect(url.replace("?sslmode=require", ""), sslmode="require") as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """select state, provider, provider_reference, provider_order_id,
+                          amount, currency, options, rollback_deadline
+                     from journey_actions
+                    where trip_id = %s and commitment_key = %s
+                    order by created_at desc limit 1""",
+                (req.trip_id, req.commitment_key))
+            row = cur.fetchone()
+            if not row:
+                return {"error": "no rescue found for this trip and commitment",
+                        "path": None}
+            action = {
+                "state": row[0], "provider": row[1], "provider_reference": row[2],
+                "provider_order_id": row[3],
+                "amount": str(row[4]) if row[4] is not None else None,
+                "currency": row[5], "options": row[6] or [],
+            }
+
+            cur.execute(
+                """select key, label, kind, starts_at, value, currency, refundable,
+                          hard_deadline, consequence
+                     from trip_commitments where trip_id = %s""",
+                (req.trip_id,))
+            commitments = [
+                {"key": r[0], "label": r[1], "kind": r[2], "starts": r[3],
+                 "value": float(r[4]) if r[4] is not None else None,
+                 "currency": r[5], "refundable": r[6],
+                 "hard_deadline": r[7], "consequence": r[8]}
+                for r in cur.fetchall()
+            ]
+
+            cur.execute(
+                """select upstream_key, downstream_key, slack_minutes,
+                          transfer_minutes, note
+                     from trip_dependencies where trip_id = %s""",
+                (req.trip_id,))
+            dependencies = [
+                {"upstream": r[0], "downstream": r[1], "slack_minutes": float(r[2]),
+                 "transfer_minutes": float(r[3]), "note": r[4]}
+                for r in cur.fetchall()
+            ]
+
+    # The cascade is recomputed from the same rows the board uses, so the film
+    # cannot claim a risk the product never showed.
+    graph = C.Graph()
+    for c in commitments:
+        graph.add(C.Commitment(
+            key=c["key"], label=c["label"], kind=c["kind"], starts=c["starts"],
+            value=c["value"], currency=c["currency"] or "GBP",
+            refundable=bool(c["refundable"]), hard_deadline=c["hard_deadline"],
+            consequence=c["consequence"] or ""))
+    for d in dependencies:
+        graph.depends(d["downstream"], on=d["upstream"],
+                      slack_minutes=d["slack_minutes"],
+                      transfer_minutes=d["transfer_minutes"], note=d["note"])
+
+    delay = 0.0
+    for option in action["options"]:
+        if isinstance(option, dict) and option.get("delayMinutes"):
+            delay = float(option["delayMinutes"])
+            break
+    if not delay:
+        from app.disruption.flight_status import lookup
+        origin_label = next((c["label"] for c in commitments
+                             if c["key"] == req.commitment_key), "")
+        iata = origin_label.replace("Flight ", "").strip()
+        status = lookup(iata) if iata else None
+        delay = float(getattr(status, "delay_minutes", 0) or 0)
+
+    cascade = (C.propagate(graph, origin=req.commitment_key, delay_minutes=delay)
+               if delay and req.commitment_key in graph.commitments else None)
+    if cascade:
+        cascade["origin"] = next((c["label"] for c in commitments
+                                  if c["key"] == req.commitment_key), req.commitment_key)
+        cascade["delay_minutes"] = delay
+
+    reference = action.get("provider_reference") or "unverified"
+    out = Path(f"/tmp/wanderos/rescue_{reference}.mp4")
+    film = build(action, out, cascade=cascade, commitments=commitments,
+                 work_dir=Path("/tmp/wanderos/work"), with_media=req.with_media)
+    return film.as_dict()

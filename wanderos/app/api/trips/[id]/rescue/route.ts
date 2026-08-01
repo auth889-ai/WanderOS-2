@@ -269,8 +269,39 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       return NextResponse.json({ error: `no commitment "${commitmentKey}" on this trip` }, { status: 404 });
     }
 
-    // What breaks next — from the cascade engine, not recomputed here.
-    const delayMinutes = Number(request.nextUrl.searchParams.get("delay") ?? 95);
+    // The delay comes from the flight provider, not from the caller. A query
+    // parameter was fine for a demo and wrong for a product: the whole screen
+    // exists because something REALLY went wrong, and taking its magnitude from
+    // whoever opened the URL means the rescue is about a disruption nobody
+    // observed. The parameter survives only as an override for testing.
+    const override = request.nextUrl.searchParams.get("delay");
+    let delayMinutes = override ? Number(override) : 0;
+    let delaySource = override ? "override (testing)" : "none";
+
+    if (!override) {
+      const iata = (broken.label ?? "").replace(/^Flight\s+/i, "").trim();
+      if (iata) {
+        try {
+          const status = await fetch(`${WORKER}/disruption/flight-status`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ flight_iata: iata }),
+            signal: AbortSignal.timeout(10_000),
+            cache: "no-store"
+          });
+          if (status.ok) {
+            const live = await status.json();
+            delayMinutes = Number(live.delay_minutes ?? 0);
+            // "live: false" means the provider could not be reached — which is
+            // not the same as "the flight is on time", and must not be shown as
+            // a healthy journey.
+            delaySource = live.live ? "flight provider" : "provider unavailable";
+          }
+        } catch {
+          delaySource = "provider unreachable";
+        }
+      }
+    }
     const cascadeResponse = await fetch(`${WORKER}/journey/cascade`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -369,6 +400,8 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       events: await A.actionEvents(action.id),
       options,
       offersSearched: search.data.length,
+      delayMinutes,
+      delaySource,
       routeUnavailable: walkRoute ? (walkRoute.ok ? null : walkRoute.reason)
                                   : `Could not locate "${trip.destination}" to measure the transfer`,
       searchedRoute: `${route.origin} → ${route.destination}`,
