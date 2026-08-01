@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { toWorkerPayload, recordProtection } from "@/lib/db/tables/commitments";
+import { isProtected, listActions } from "@/lib/db/tables/journey-actions";
 import { getTripById } from "@/lib/db/tables/trips";
 
 /**
@@ -37,6 +38,24 @@ async function buildBoard(tripId: string) {
 
   const { commitments, dependencies, protections } = await toWorkerPayload(tripId);
 
+  // A completed rescue IS a protection. Reading journey_actions here is what
+  // connects Recovery Theatre back to the board: purple requires a verified
+  // action carrying a provider reference, and `isProtected` is the single
+  // definition of that so the two screens cannot disagree.
+  const rescues = (await listActions(tripId))
+    .filter((a) => isProtected(a))
+    .map((a) => ({
+      commitment_key: a.commitment_key,
+      action:
+        `${a.provider} confirmed ${a.provider_reference}` +
+        (a.provider_mode === "sandbox" ? " (sandbox)" : "") +
+        (a.rollback_deadline
+          ? ` — held until ${new Date(a.rollback_deadline).toLocaleString()}`
+          : ""),
+      acted_by: "guardian",
+      created_at: a.verified_at ?? a.updated_at
+    }));
+
   // Live flight status where we have a flight. A stale delay produces a
   // confident board about a situation that has already changed, so a failure
   // here degrades to "no delay known" rather than to a remembered number.
@@ -68,7 +87,7 @@ async function buildBoard(tripId: string) {
       flight,
       commitments,
       dependencies,
-      protections: protections.map((p) => ({
+      protections: [...protections, ...rescues].map((p) => ({
         commitment_key: p.commitment_key,
         action: p.action,
         acted_by: p.acted_by
