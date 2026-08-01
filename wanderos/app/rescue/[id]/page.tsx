@@ -41,6 +41,16 @@ type Action = {
   chosen_offer_id: string | null;
 };
 
+type Order = {
+  reference: string; status: string; payBy: string | null;
+  amount: number; currency: string; passenger: string; mode: string;
+  segments: Array<{ flightNumber: string; carrier: string; from: string; fromName: string;
+    fromTerminal: string | null; to: string; toName: string; toTerminal: string | null;
+    departsAt: string; arrivesAt: string; aircraft: string | null; cabin: string }>;
+  conditions: { changeable: boolean | null; refundable: boolean | null };
+  cancellable: boolean; manageUrl: string | null;
+};
+
 type Rescue = {
   trip: { id: string; title: string; destination: string };
   broken: { key: string; label: string; kind: string };
@@ -76,6 +86,7 @@ export default function RescuePage({ params }: { params: Promise<{ id: string }>
   const [drawer, setDrawer] = useState<Option | null>(null);
   const [acting, setActing] = useState(false);
   const [notice, setNotice] = useState("");
+  const [order, setOrder] = useState<Order | null>(null);
 
   useEffect(() => { void params.then((p) => setTripId(p.id)); }, [params]);
 
@@ -94,6 +105,16 @@ export default function RescuePage({ params }: { params: Promise<{ id: string }>
 
   useEffect(() => { if (tripId) void load(tripId); }, [tripId, load]);
 
+  // Read the booking back from the airline once one exists. Fetched rather than
+  // stored, so a schedule change by the carrier appears without a re-save.
+  useEffect(() => {
+    if (!tripId || !data?.action?.provider_reference) return;
+    void fetch(`/api/trips/${tripId}/rescue/order?commitment=flight`, { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((j) => { if (j && !j.error) setOrder(j); })
+      .catch(() => setOrder(null));
+  }, [tripId, data?.action?.provider_reference]);
+
   const decide = async (decision: "approve" | "reject") => {
     if (!tripId || (decision === "approve" && !selected)) return;
     setActing(true); setNotice("");
@@ -103,12 +124,17 @@ export default function RescuePage({ params }: { params: Promise<{ id: string }>
         body: JSON.stringify({ commitmentKey: "flight", decision, offerId: selected })
       });
       const j = await r.json();
-      if (j.priceChanged) {
+      if (j.expired) {
+        setNotice(j.message);
+        setSelected(null);
+      } else if (j.priceChanged) {
         setNotice(`The price moved from ${j.priceChanged.currency} ${j.priceChanged.from} to ${j.priceChanged.to} while you were deciding. Approve again to accept the new price.`);
       } else if (j.duplicate) {
         setNotice(j.message);
       }
-      setData((d) => (d ? { ...d, action: j.action ?? d.action, events: j.events ?? d.events } : d));
+      setData((d) =>
+        d ? { ...d, action: j.action ?? d.action, events: j.events ?? d.events,
+              options: j.options ?? d.options } : d);
     } finally { setActing(false); }
   };
 
@@ -343,6 +369,108 @@ export default function RescuePage({ params }: { params: Promise<{ id: string }>
               <p className="mt-4 text-xs text-slateInk">
                 No money has moved. The seat is held until the deadline above; after that it lapses.
               </p>
+
+              {/* The booking itself, read back from the carrier. This is the
+                  answer to "where do I go now" — Duffel is a B2B API and issues
+                  no consumer link, so the PNR is used on the airline's own site. */}
+              {order && (
+                <div className="mt-6 border-t border-line pt-6">
+                  <p className="text-[11px] uppercase tracking-[0.22em] text-slateInk">
+                    Your booking, live from {order.segments[0]?.carrier ?? "the airline"}
+                  </p>
+                  {order.segments.map((seg, i) => (
+                    <div key={i} className="mt-3 rounded-xl border border-line bg-card p-4">
+                      <div className="flex flex-wrap items-baseline gap-x-3">
+                        <span className="font-display text-lg">{seg.flightNumber}</span>
+                        <span className="text-sm text-slateInk">{seg.carrier}</span>
+                        <span className="text-xs text-slateInk">{seg.aircraft ?? ""}</span>
+                      </div>
+                      <div className="mt-2 grid gap-2 sm:grid-cols-2 text-sm">
+                        <div>
+                          <p className="font-mono tabular-nums">
+                            {new Date(seg.departsAt).toLocaleString()}
+                          </p>
+                          <p className="text-slateInk">
+                            {seg.from} · {seg.fromName}
+                            {seg.fromTerminal ? ` · Terminal ${seg.fromTerminal}` : ""}
+                          </p>
+                        </div>
+                        <div>
+                          <p className="font-mono tabular-nums">
+                            {new Date(seg.arrivesAt).toLocaleString()}
+                          </p>
+                          <p className="text-slateInk">
+                            {seg.to} · {seg.toName}
+                            {seg.toTerminal ? ` · Terminal ${seg.toTerminal}` : ""}
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+
+                  <dl className="mt-3 grid gap-2 sm:grid-cols-2 text-sm">
+                    <Row k="Passenger" v={order.passenger} />
+                    <Row k="Cabin" v={order.segments[0]?.cabin ?? "—"} />
+                    <Row k="Changeable"
+                         v={order.conditions.changeable === null ? "not stated"
+                            : order.conditions.changeable ? "yes" : "no"}
+                         warn={order.conditions.changeable === false} />
+                    <Row k="Refundable"
+                         v={order.conditions.refundable === null ? "not stated"
+                            : order.conditions.refundable ? "yes" : "no"}
+                         warn={order.conditions.refundable === false} />
+                  </dl>
+
+                  {order.manageUrl ? (
+                    <a href={order.manageUrl} target="_blank" rel="noopener noreferrer"
+                      className="mt-4 inline-block rounded-lg bg-forest px-5 py-2.5 text-sm text-white transition hover:bg-forestDeep">
+                      Manage this booking at {order.segments[0]?.carrier ?? "the airline"} →
+                    </a>
+                  ) : (
+                    <p className="mt-4 text-xs text-slateInk">
+                      This carrier has no online manage-booking page on file. Quote
+                      reference {order.reference} to the airline directly.
+                    </p>
+                  )}
+                  <p className="mt-2 text-[11px] text-slateInk">
+                    Enter reference <strong>{order.reference}</strong> there.
+                    {order.mode === "sandbox" && " In sandbox this reference exists only in Duffel's test system, not in the airline's."}
+                  </p>
+                </div>
+              )}
+
+              {/* The film exists only because a verified reference does — the
+                  same rule that turned this panel purple. */}
+              <div className="mt-6 border-t border-line pt-6">
+                <p className="text-[11px] uppercase tracking-[0.22em] text-slateInk">
+                  The film of this rescue
+                </p>
+                <div className="mt-3 flex flex-col gap-4 sm:flex-row">
+                  <video
+                    controls
+                    playsInline
+                    preload="metadata"
+                    src={`/films/rescue_${action!.provider_reference}.mp4`}
+                    className="w-full max-w-[260px] rounded-xl border border-line bg-black"
+                  />
+                  <div className="flex-1 text-xs text-slateInk space-y-1.5">
+                    <p className="text-ink">
+                      Narrated by <strong>AWS Polly</strong>, imagery by{" "}
+                      <strong>AWS Bedrock</strong> (Stability), composed with ffmpeg
+                      and stored in <strong>Backblaze B2</strong>.
+                    </p>
+                    <p>
+                      Every scene carries a provenance label — CAPTURED for facts a
+                      provider stated, RECONSTRUCTED for values this system computed.
+                      Nothing in it is invented.
+                    </p>
+                    <p className="text-slateInk/70">
+                      Seven beats, 24s. A beat with no evidence behind it is dropped
+                      rather than padded.
+                    </p>
+                  </div>
+                </div>
+              </div>
             </motion.section>
           )}
         </AnimatePresence>

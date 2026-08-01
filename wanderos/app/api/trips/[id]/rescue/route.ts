@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import * as A from "@/lib/db/tables/journey-actions";
 import { toWorkerPayload } from "@/lib/db/tables/commitments";
 import { getTripById } from "@/lib/db/tables/trips";
+import { queryAurora } from "@/lib/db/pool";
 import { stepFreeRoute } from "@/lib/travel/accessibility";
 import * as duffel from "@/lib/travel/duffel";
 
@@ -24,6 +25,96 @@ const WORKER = process.env.MEDIA_WORKER_URL ?? "http://127.0.0.1:8000";
 
 /** Airlines charge roughly this to add a bag at the airport. */
 const BAG_FEE: Record<string, number> = { USD: 75, EUR: 70, GBP: 65 };
+
+/**
+ * The route to search, taken from the broken commitment rather than assumed.
+ *
+ * A label like "Flight EK582 DXB-LHR" carries the airports; a commitment that
+ * does not name them cannot be rescued by guessing, so the caller is told
+ * rather than shown alternatives for somebody else's journey.
+ */
+function routeFrom(
+  broken: { label?: string; consequence?: string },
+  trip: { destination?: string }
+): { origin: string; destination: string } | null {
+  const text = `${broken.label ?? ""} ${broken.consequence ?? ""}`;
+  const pair = text.match(/\b([A-Z]{3})\b[^A-Z]{1,4}\b([A-Z]{3})\b/);
+  if (pair) return { origin: pair[1], destination: pair[2] };
+
+  const single = text.match(/\b([A-Z]{3})\b/);
+  const arrival = CITY_AIRPORT[(trip.destination ?? "").toLowerCase()];
+  if (single && arrival && single[1] !== arrival) {
+    return { origin: single[1], destination: arrival };
+  }
+  return null;
+}
+
+/** Enough to resolve a destination the traveller typed. Extend as needed —
+ *  an unknown city returns null rather than a wrong airport. */
+const CITY_AIRPORT: Record<string, string> = {
+  london: "LHR", paris: "CDG", "new york": "JFK", dubai: "DXB",
+  tokyo: "HND", singapore: "SIN", amsterdam: "AMS", madrid: "MAD",
+  rome: "FCO", berlin: "BER", barcelona: "BCN", istanbul: "IST",
+  dhaka: "DAC", bangkok: "BKK", sydney: "SYD", toronto: "YYZ"
+};
+
+/**
+ * Where the arrival transfer actually happens.
+ *
+ * Geocoded from the trip's own destination via Open-Meteo, so a trip to Rome
+ * measures walking in Rome. Falls back to no route rather than to London — a
+ * confident walking distance for the wrong city is worse than none.
+ */
+async function arrivalTransfer(
+  destination: string
+): Promise<{ from: [number, number]; to: [number, number] } | null> {
+  if (!destination) return null;
+  try {
+    const response = await fetch(
+      `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(destination)}&count=1`,
+      { signal: AbortSignal.timeout(15_000) }
+    );
+    if (!response.ok) return null;
+    const first = (await response.json())?.results?.[0];
+    if (!first) return null;
+    const lon = Number(first.longitude);
+    const lat = Number(first.latitude);
+    // A short transfer leg through the city centre: roughly 2-3 km, which is
+    // the scale of a real station-to-accommodation walk.
+    return { from: [lon - 0.018, lat + 0.014], to: [lon + 0.010, lat - 0.012] };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The traveller the seat is held for — read from the trip's owner.
+ *
+ * A hold under a placeholder name is a hold for nobody: the airline matches
+ * the passenger against the name on the document, and a booking made out to
+ * "Traveller WanderOS" cannot be flown. Where the record has no usable name
+ * the hold is refused rather than made under a fiction.
+ */
+async function passengerFor(tripId: string): Promise<
+  { given_name: string; family_name: string; email: string } | null
+> {
+  const rows = await queryAurora<{ name: string; email: string }>(
+    `select u.name, u.email from users u
+       join trips t on t.traveler_id = u.id
+      where t.id = $1`,
+    [tripId]
+  );
+  const user = rows[0];
+  if (!user?.name?.trim() || !user?.email?.trim()) return null;
+
+  const parts = user.name.trim().split(/\s+/);
+  if (parts.length < 2) return null;   // an airline needs both names
+  return {
+    given_name: parts[0],
+    family_name: parts.slice(1).join(" "),
+    email: user.email
+  };
+}
 
 /** A calendar day from a Date, an ISO string, or nothing. */
 function isoDay(value: unknown): string | null {
@@ -222,7 +313,21 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     // "Tue Aug 04 2026" and slicing it gives "Tue Aug 0", which Duffel rejects
     // with a message about ISO format that says nothing about the cause.
     const departureDate = isoDay(broken.starts) ?? isoDay(new Date())!;
-    const search = await duffel.searchOffers({ origin: "DXB", destination: "LHR", departureDate });
+    const route = routeFrom(broken, trip);
+    if (!route) {
+      return NextResponse.json({
+        trip: { id, title: trip.title, destination: trip.destination },
+        broken, cascade, action, events: await A.actionEvents(action.id),
+        options: [],
+        unavailable:
+          `Cannot tell which airports "${broken.label}" connects. ` +
+          `Alternatives are not shown rather than searched for a guessed route.`,
+        providerMode: "sandbox"
+      });
+    }
+    const search = await duffel.searchOffers({
+      origin: route.origin, destination: route.destination, departureDate
+    });
 
     if (!search.ok) {
       await A.transition({ actionId: action.id, to: "failed", detail: search.reason, patch: { failure_reason: search.reason } });
@@ -243,11 +348,9 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     // true and useless: nobody wheels from Heathrow to Westminster.
     //
     // Paddington (where the airport train arrives) to the Kensington stay.
-    const route = await stepFreeRoute({
-      from: [-0.1755, 51.5154],
-      to: [-0.1898, 51.4975]
-    });
-    const walking = route.ok ? route.distanceMetres : null;
+    const leg = await arrivalTransfer(trip.destination ?? "");
+    const walkRoute = leg ? await stepFreeRoute(leg) : null;
+    const walking = walkRoute?.ok ? walkRoute.distanceMetres : null;
 
     const options = pick(search.data, walking);
     const soonest = options.map((o) => o.expiresAt).filter(Boolean).sort()[0] ?? null;
@@ -266,7 +369,9 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       events: await A.actionEvents(action.id),
       options,
       offersSearched: search.data.length,
-      routeUnavailable: route.ok ? null : route.reason,
+      routeUnavailable: walkRoute ? (walkRoute.ok ? null : walkRoute.reason)
+                                  : `Could not locate "${trip.destination}" to measure the transfer`,
+      searchedRoute: `${route.origin} → ${route.destination}`,
       providerMode: "sandbox",
       restored: false
     });
@@ -310,6 +415,10 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     if (!offerId) return NextResponse.json({ error: "offerId is required to approve" }, { status: 400 });
 
+    const { commitments: cs } = await toWorkerPayload(id);
+    const departureDate =
+      isoDay(cs.find((c) => c.key === commitmentKey)?.starts) ?? isoDay(new Date())!;
+
     // Re-price BEFORE committing: an offer that moved books at a number nobody
     // agreed to, and the traveller must see the change rather than absorb it.
     const priced = await duffel.confirmPrice(offerId);
@@ -352,13 +461,65 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     await A.transition({ actionId: action.id, to: "executing", detail: "Holding the seat with the provider" });
 
+    const passenger = await passengerFor(id);
+    if (!passenger) {
+      const updated = await A.transition({
+        actionId: action.id, to: "failed",
+        detail: "No usable traveller name on the account; a hold cannot be made under a placeholder",
+        patch: {
+          failure_reason:
+            "The airline matches the passenger name against your travel document. " +
+            "Add your full name to your account before holding a seat."
+        }
+      });
+      return NextResponse.json({ action: updated, events: await A.actionEvents(action.id) });
+    }
+
     const held = await duffel.holdOrder(priced.data, {
-      given_name: "Traveller", family_name: "WanderOS",
-      born_on: "1990-01-01", email: "traveller@wanderos.app",
+      given_name: passenger.given_name,
+      family_name: passenger.family_name,
+      // Duffel requires a date of birth; it is not on the account yet, so this
+      // is a documented placeholder rather than a silent invention. Collecting
+      // it belongs in the traveller profile, not here.
+      born_on: "1990-01-01",
+      email: passenger.email,
       phone_number: "+442080160509"
     });
 
     if (!held.ok) {
+      // Duffel answers an EXPIRED offer with "The specified `type` was
+      // incorrect", which tells the traveller nothing and sounds like our bug.
+      // An offer that lapsed while someone was deciding is a normal event on
+      // this screen and deserves a re-search, not an error.
+      const expired = /type` was incorrect|offer.*(expired|no longer)/i.test(held.reason);
+      if (expired) {
+        const freshRoute = routeFrom(
+          cs.find((c) => c.key === commitmentKey) ?? {}, { destination: "" }
+        );
+        const fresh = freshRoute
+          ? await duffel.searchOffers({
+              origin: freshRoute.origin, destination: freshRoute.destination, departureDate
+            })
+          : { ok: false as const, reason: "route unknown", retryable: false };
+        if (fresh.ok && fresh.data.length) {
+          const refreshed = pick(fresh.data, null);
+          const updated = await A.transition({
+            actionId: action.id, to: "simulated",
+            detail: "The chosen option expired while you were deciding; prices refreshed",
+            patch: { options: refreshed, chosen_offer_id: null }
+          });
+          return NextResponse.json({
+            action: updated,
+            events: await A.actionEvents(action.id),
+            options: refreshed,
+            expired: true,
+            message:
+              "That option expired before the airline could hold it. " +
+              "These are fresh prices — choose again."
+          });
+        }
+      }
+
       const updated = await A.transition({
         actionId: action.id, to: "failed",
         detail: `Provider refused the hold: ${held.reason}`,

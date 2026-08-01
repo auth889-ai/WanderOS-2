@@ -305,3 +305,104 @@ export async function cancelOrder(orderId: string): Promise<DuffelResult<{ cance
   });
   return confirm.ok ? { ok: true, data: { cancelled: true } } : confirm;
 }
+
+
+export type OrderDetail = {
+  reference: string;
+  orderId: string;
+  status: "held" | "paid";
+  payBy: string | null;
+  amount: number;
+  currency: string;
+  passenger: string;
+  segments: Array<{
+    carrier: string;
+    carrierIata: string;
+    flightNumber: string;
+    from: string;
+    fromName: string;
+    fromTerminal: string | null;
+    to: string;
+    toName: string;
+    toTerminal: string | null;
+    departsAt: string;
+    arrivesAt: string;
+    aircraft: string | null;
+    cabin: string;
+  }>;
+  conditions: { changeable: boolean | null; refundable: boolean | null };
+  cancellable: boolean;
+  /** The airline's own manage-booking page. The PNR is entered THERE — Duffel
+   *  is a B2B API and issues no consumer link of its own, in sandbox or live. */
+  manageUrl: string | null;
+};
+
+/** Where a passenger actually uses their reference. */
+const MANAGE_URLS: Record<string, string> = {
+  BA: "https://www.britishairways.com/travel/managebooking/public/en_gb",
+  AA: "https://www.aa.com/reservation/view/find-your-trip",
+  EK: "https://www.emirates.com/manage-booking/",
+  IB: "https://www.iberia.com/gb/manage-booking/",
+  AF: "https://wwws.airfrance.co.uk/manage-booking",
+  KL: "https://www.klm.co.uk/trip/manage",
+  LH: "https://www.lufthansa.com/gb/en/manage-booking",
+  AT: "https://www.royalairmaroc.com/uk-en/Manage-booking",
+  QR: "https://www.qatarairways.com/en/manage-booking.html",
+  TK: "https://www.turkishairlines.com/en-int/flights/manage-booking/"
+};
+
+/**
+ * Fetch an order back from the provider.
+ *
+ * This is what makes a held seat inspectable rather than a claim: the segments,
+ * terminals and conditions all come from the airline via Duffel at read time,
+ * so a schedule change shows up here without anything being re-saved.
+ */
+export async function getOrder(orderId: string): Promise<DuffelResult<OrderDetail>> {
+  const result = await call<any>(`/air/orders/${orderId}`);
+  if (!result.ok) return result;
+
+  const d = result.data;
+  const segments = (d.slices ?? []).flatMap((slice: any) =>
+    (slice.segments ?? []).map((seg: any) => ({
+      carrier: seg.marketing_carrier?.name ?? "",
+      carrierIata: seg.marketing_carrier?.iata_code ?? "",
+      flightNumber: `${seg.marketing_carrier?.iata_code ?? ""}${seg.marketing_carrier_flight_number ?? ""}`,
+      from: seg.origin?.iata_code ?? "",
+      fromName: seg.origin?.name ?? "",
+      fromTerminal: seg.origin_terminal ?? null,
+      to: seg.destination?.iata_code ?? "",
+      toName: seg.destination?.name ?? "",
+      toTerminal: seg.destination_terminal ?? null,
+      departsAt: seg.departing_at,
+      arrivesAt: seg.arriving_at,
+      aircraft: seg.aircraft?.name ?? null,
+      cabin: seg.passengers?.[0]?.cabin_class ?? "economy"
+    }))
+  );
+
+  const owner = d.owner?.iata_code ?? segments[0]?.carrierIata ?? "";
+  const passengerName = d.passengers?.[0]
+    ? `${d.passengers[0].given_name ?? ""} ${d.passengers[0].family_name ?? ""}`.trim()
+    : "";
+
+  return {
+    ok: true,
+    data: {
+      reference: d.booking_reference,
+      orderId: d.id,
+      status: d.payment_status?.awaiting_payment ? "held" : "paid",
+      payBy: d.payment_status?.payment_required_by ?? null,
+      amount: Number(d.total_amount),
+      currency: d.total_currency,
+      passenger: passengerName,
+      segments,
+      conditions: {
+        changeable: d.conditions?.change_before_departure?.allowed ?? null,
+        refundable: d.conditions?.refund_before_departure?.allowed ?? null
+      },
+      cancellable: (d.available_actions ?? []).includes("cancel"),
+      manageUrl: MANAGE_URLS[owner] ?? null
+    }
+  };
+}
