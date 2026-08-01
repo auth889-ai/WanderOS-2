@@ -748,3 +748,75 @@ def journey_cascade(req: CascadeReq):
 
     return propagate(graph, origin=req.origin, delay_minutes=req.delay_minutes,
                      uncertainty_minutes=req.uncertainty_minutes)
+
+
+class PulseReq(BaseModel):
+    destination: str = ""
+    start_date: str = ""
+    end_date: str = ""
+    mobility: str = "moderate"
+    flight: dict = {}
+    weather: dict = {}
+    readiness: dict = {}
+    entitlement: dict = {}
+    commitments: list[dict] = []
+    dependencies: list[dict] = []
+
+
+@app.post("/journey/pulse")
+def journey_pulse(req: PulseReq):
+    """The board — what the traveller sees before asking anything."""
+    from datetime import date, datetime
+
+    from app.journey import cascade as C
+    from app.journey import pulse as P
+    from app.journey import twin as T
+
+    def day(v):
+        return date.fromisoformat(v) if v else None
+
+    def when(v):
+        return datetime.fromisoformat(v) if v else None
+
+    twin = T.seed("pulse", destination=req.destination, start=day(req.start_date),
+                  end=day(req.end_date), mobility=req.mobility)
+    for key, value in ((T.FLIGHT, req.flight), (T.WEATHER, req.weather),
+                       ("readiness", req.readiness), (T.ENTITLEMENT, req.entitlement)):
+        if value:
+            twin.record(key, value, source="third_party", by="intake")
+
+    graph = C.Graph()
+    for raw in req.commitments:
+        graph.add(C.Commitment(
+            key=raw["key"], label=raw.get("label", raw["key"]),
+            kind=raw.get("kind", "booking"), starts=when(raw.get("starts")),
+            value=raw.get("value"), refundable=raw.get("refundable", True),
+            hard_deadline=when(raw.get("hard_deadline")),
+            consequence=raw.get("consequence", "")))
+    for raw in req.dependencies:
+        graph.depends(raw["downstream"], on=raw["upstream"],
+                      slack_minutes=raw.get("slack_minutes", 0),
+                      transfer_minutes=raw.get("transfer_minutes", 0),
+                      note=raw.get("note", ""))
+
+    disruption = None
+    delay = (req.flight or {}).get("delay_minutes") or 0
+    if delay and "flight" in graph.commitments:
+        disruption = C.propagate(graph, origin="flight", delay_minutes=delay)
+
+    return P.build(twin, graph=graph, disruption=disruption)
+
+
+class ProtectReq(BaseModel):
+    board: dict
+    node_key: str
+    action: str
+    by: str = "guardian"
+
+
+@app.post("/journey/pulse/protect")
+def journey_pulse_protect(req: ProtectReq):
+    """Record that Guardian acted — the only thing that turns a node purple."""
+    from app.journey.pulse import protect
+
+    return protect(req.board, req.node_key, action=req.action, by=req.by)
