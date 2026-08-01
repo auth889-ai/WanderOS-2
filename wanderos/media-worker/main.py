@@ -687,3 +687,23 @@ def journey_export(req: ExportReq):
     # Return the calendar inline so a caller can hand it straight to a browser.
     out["calendar"]["ics"] = _Path(out["calendar"]["path"]).read_text()
     return out
+
+
+class DestinationReq(BaseModel):
+    names: list[str]
+    wanted: dict[str, float] = {}
+
+
+@app.post("/planning/destinations")
+def planning_destinations(req: DestinationReq):
+    """Compare REAL places, with attributes counted from OpenStreetMap.
+
+    Replaces a hardcoded catalogue of eight: any place on earth resolves, and
+    scores rest on counted map data rather than an opinion.
+    """
+    from app.planning.destinations import compare, enrich
+
+    if req.wanted:
+        return compare(req.names, req.wanted)
+    return {"destinations": [d.as_dict() for d in
+                            (enrich(n) for n in req.names) if d]}
