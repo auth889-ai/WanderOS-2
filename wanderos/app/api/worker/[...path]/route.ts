@@ -18,7 +18,7 @@ const WORKER = process.env.MEDIA_WORKER_URL || "http://127.0.0.1:8000";
 const ALLOWED = new Set([
   "health", "rights/assess", "planning/weather", "planning/packing",
   "planning/dream", "planning/sensory", "planning/readiness", "planning/fairness",
-  "planning/itinerary/validate", "planning/accessibility",
+  "planning/itinerary/validate", "planning/accessibility", "planning/true-cost",
   "trust/verify-demo", "evidence/demo-classify"
 ]);
 

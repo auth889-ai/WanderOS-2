@@ -596,3 +596,24 @@ async def readiness_from_photo(file: UploadFile = File(...)):
             "confidence": doc.source_confidence,
             "note": ("Fields below 0.55 confidence are dropped rather than kept — a wrong "
                      "expiry silently passes the six-month check.")}
+
+
+class TrueCostReq(BaseModel):
+    nights: int
+    travellers: int = 1
+    headline_price: float = 0.0
+    checked_bags: int = 0
+    seat_selection: bool = False
+    budget_carrier: bool = False
+    resort_hotel: bool = False
+    needs_visa: bool = False
+    expected_card_spend: float = 0.0
+    card_type: str = "typical_bank"
+
+
+@app.post("/planning/true-cost")
+def planning_true_cost(req: TrueCostReq):
+    """What the trip will actually cost — the #1 named travel frustration (61%)."""
+    from app.planning.true_cost import Trip, estimate
+
+    return estimate(Trip(**req.model_dump()))

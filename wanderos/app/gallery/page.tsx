@@ -37,45 +37,61 @@ const SHOTS = [
     body: "Three frames of the same route. The counter climbs with the line, never ahead of it." }
 ];
 
+/**
+ * Written from the traveller's problem, not the product's properties.
+ *
+ * The first version of this page led with "it will not invent your past" —
+ * true, and something nobody wakes up wanting. People wake up thinking "my
+ * flight is cancelled and I'm in a queue of two hundred". Each pillar now opens
+ * with the complaint and its evidence, and the capability follows.
+ */
 const PILLARS = [
   {
-    tag: "01", name: "It will not invent your past",
-    stat: "2.05×", statLabel: "false-memory rate for AI video (CHI 2025)",
+    tag: "01",
+    problem: "“The price I saw was not the price I paid.”",
+    stat: "61%", statLabel: "name hidden fees their #1 booking frustration — no other issue came within 24 points",
+    answer: "We total the bag, the seat, the cabin bag, the tourist tax, the transfer, the SIM and the 3.5% your bank takes on every tap — before you book.",
     items: [
-      "Six truth statuses — INFERRED can never generate without you",
-      "Silence means no. One code path can promote a claim",
-      "Refusals rendered as cards inside the film",
-      "GPS physically stripped before anything is shared"
+      "A €420 trip typically becomes €1,024 — and it says so up front",
+      "Ranges, never false precision: “check your carrier” is the honest answer",
+      "A price you were actually quoted always overrides our estimate",
+      "Nothing scraped — a stale fee presented as fact is the problem itself"
     ]
   },
   {
-    tag: "02", name: "It will not hand you an impossible plan",
-    stat: "~90%", statLabel: "of AI itineraries contain at least one error",
+    tag: "02",
+    problem: "“My flight is cancelled and I'm in a queue of two hundred.”",
+    stat: "~90%", statLabel: "of AI itineraries contain at least one error, and none of them help when it breaks",
+    answer: "Three things need doing and only one is obvious. We rank them by what expires soonest, not by what is worth most.",
     items: [
-      "Real street routing — prev_end + travel + buffer ≤ next_start",
-      "Closed weekdays, opening hours, unbooked tickets",
-      "A 4 km walk given 20 minutes is rejected with the arithmetic",
-      "Group fairness maximises the worst-off member, not the average"
+      "A €65 transfer refundable until 2am outranks a €600 claim you can file next month",
+      "EC261 / UK261 / US DOT / Montreal — with the article cited",
+      "The right to meals and a hotel survives what compensation does not",
+      "Evidence sealed while it still exists, because claims fail on proof"
     ]
   },
   {
-    tag: "03", name: "You can overrule it, and the correction is kept",
-    stat: "#1", statLabel: "complaint about the 18M-user incumbent",
+    tag: "03",
+    problem: "“Nobody asked whether my mother could actually manage this.”",
+    stat: "#1", statLabel: "trip-ruining factor after money: companion mismatch",
+    answer: "The loudest person usually decides. We optimise for the person having the worst time, and a wheelchair is not a preference to be outvoted.",
     items: [
-      "Phantom GPS stops can finally be deleted",
-      "The original inference survives — history is never rewritten",
-      "Corrections outrank inference permanently",
-      "Layover artefacts are suggested unprompted"
+      "A plan breaking one member's hard constraint is infeasible, not lower-scoring",
+      "Accessibility graded by who said so — a venue's claim is the weakest kind",
+      "Sensory load: a 2 km airport day is harder than a 9 km hike",
+      "Every sacrifice named, so a group decision can be inspected"
     ]
   },
   {
-    tag: "04", name: "It works when nothing else does",
-    stat: "14", statLabel: "provider rungs across 4 vendors",
+    tag: "04",
+    problem: "“I have 800 photos I will never look at again.”",
+    stat: "70%", statLabel: "of photos are never revisited; 77% have no plan for them at all",
+    answer: "A film that assembles itself from what you actually have — and stops to say so when it cannot prove something happened.",
     items: [
-      "Offline pack: one file, zero network calls, no secrets inside",
-      "Emergency numbers assembled before departure — 911 is not universal",
-      "Accessibility graded by who said so; unknown is never yes",
-      "A dead vendor drops one rung, not the run"
+      "Refusals rendered as cards, not silently deleted",
+      "AI video from AI-edited photos implants false memories at 2.05×",
+      "Every scene labelled: from your photo, or recreated with your approval",
+      "Sealed under B2 Object Lock — one flipped byte and verification fails"
     ]
   }
 ];
@@ -106,9 +122,13 @@ export default function GalleryPage() {
           </p>
           <h1 className="mx-auto mt-5 max-w-4xl font-display text-6xl leading-[1.05] text-peach
                          drop-shadow-[0_0_36px_rgba(239,109,91,0.4)]">
-            The only travel AI that refuses to make things up
+            Travel apps show you the fare. We show you the bill.
           </h1>
-          <p className="mt-5 text-lg text-mist/80">— and can prove it.</p>
+          <p className="mx-auto mt-5 max-w-2xl text-lg text-mist/80">
+            The hidden fees, the plan that cannot physically be walked, the person in
+            your group having a miserable time — and a film that refuses to invent the
+            parts you cannot prove.
+          </p>
           <div className="mt-8 flex flex-wrap justify-center gap-2 text-[11px]">
             {["33 features", "127 tests", "14 provider rungs · 4 vendors",
               "B2 Object Lock · ed25519", "EU AI Act Art. 50"].map((chip) => (
@@ -129,7 +149,9 @@ export default function GalleryPage() {
               <div className="flex items-start justify-between gap-4">
                 <div>
                   <p className="font-mono text-[11px] text-mist/50">{p.tag}</p>
-                  <h2 className="mt-2 font-display text-2xl leading-snug text-parchment">{p.name}</h2>
+                  <h2 className="mt-2 font-display text-2xl leading-snug text-parchment">
+                    {p.problem}
+                  </h2>
                 </div>
                 <div className="shrink-0 text-right">
                   <p className="font-display text-4xl text-coral drop-shadow-[0_0_18px_rgba(239,109,91,0.5)]">
@@ -138,6 +160,7 @@ export default function GalleryPage() {
                 </div>
               </div>
               <p className="mt-1 text-right text-[10px] leading-tight text-mist/50">{p.statLabel}</p>
+              <p className="mt-4 text-sm leading-snug text-peach/90">{p.answer}</p>
               <ul className="mt-5 space-y-2">
                 {p.items.map((item) => (
                   <li key={item} className="flex gap-2.5 text-sm leading-snug text-mist/85">
