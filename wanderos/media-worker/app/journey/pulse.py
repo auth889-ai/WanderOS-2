@@ -214,23 +214,38 @@ def build(twin, *, graph: C.Graph | None = None, disruption: dict | None = None,
             # the weather module makes survives onto the board.
             stale_after=now + timedelta(hours=6 if weather.get("kind") == "forecast" else 72)))
 
-    # --- Everything downstream of the disruption ---
-    if disruption and disruption.get("at_risk"):
-        for item in disruption["at_risk"]:
+    # --- Every commitment appears, with risk overlaid where there is any ---
+    #
+    # A commitment whose risk was absorbed must still show, in green. Dropping
+    # it would make a booking vanish from the ribbon exactly because it is
+    # safe — and the traveller cannot tell "this is fine" from "this was
+    # forgotten". It would also hide any action Guardian had already taken on it.
+    risk_by_key = {item["key"]: item for item in (disruption or {}).get("at_risk", [])}
+    absorbed_by_label = {a["commitment"]: a
+                         for a in (disruption or {}).get("absorbed", [])}
+
+    for key, commitment in graph.commitments.items():
+        if key == "flight":
+            continue                      # already on the board above
+        item = risk_by_key.get(key)
+        if item:
             nodes.append(Node(
-                key=item["key"], label=item["commitment"], kind=item["kind"],
-                band=item["band"], risk=item["risk"],
+                key=key, label=item["commitment"], kind=item["kind"],
+                at=commitment.starts, band=item["band"], risk=item["risk"],
                 detail=(item.get("hard_deadline_breached")
                         or f"{item['risk']:.0%} risk — {item['because']}"),
                 stale_after=now + timedelta(minutes=30),
                 actions=[{"label": "Protect this", "route": "/rescue"}]))
-    elif graph.commitments:
-        for key, commitment in graph.commitments.items():
-            if key == "flight":
-                continue
-            nodes.append(Node(key=key, label=commitment.label,
-                              kind=commitment.kind, at=commitment.starts,
-                              band=GREEN, detail="No risk detected"))
+            continue
+
+        absorbed = absorbed_by_label.get(commitment.label)
+        nodes.append(Node(
+            key=key, label=commitment.label, kind=commitment.kind,
+            at=commitment.starts, band=GREEN,
+            # Saying WHY it is safe is more useful than saying nothing —
+            # "the delay fits inside your buffer" is the reassurance a
+            # traveller is actually looking for.
+            detail=(absorbed["why"] if absorbed else "No risk detected")))
 
     # --- Entitlement is money owed, which is never "just information" ---
     entitlement = twin.get(T.ENTITLEMENT) or {}

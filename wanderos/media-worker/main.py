@@ -9,12 +9,44 @@ Endpoints (Phase 2 surface; the orchestrating LangGraph calls these):
 """
 from __future__ import annotations
 
+import logging
+
 from fastapi import FastAPI, File, UploadFile
+from datetime import datetime
 from pydantic import BaseModel, Field
 
 from app.config.settings import settings
 from app.media import pipelines
 from app.runtime.events import drain_local_events
+
+logger = logging.getLogger(__name__)
+
+
+def _iso(value):
+    """Parse a timestamp from anywhere — Postgres, JS, or a form field.
+
+    Postgres via Node emits `2026-08-03T18:00:00.000Z`; Python's fromisoformat
+    rejects the `Z` on older versions and the caller should not have to care
+    which database driver produced the string. Returns None rather than raising,
+    because one unparseable date must not take down a whole board.
+    """
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        return value
+    text = str(value).strip().replace("Z", "+00:00")
+    try:
+        return datetime.fromisoformat(text)
+    except ValueError:
+        for fmt in ("%Y-%m-%dT%H:%M:%S.%f%z", "%Y-%m-%dT%H:%M:%S%z",
+                    "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+            try:
+                return datetime.strptime(text, fmt)
+            except ValueError:
+                continue
+    logger.info("unparseable timestamp %r — treated as unknown", value)
+    return None
+
 
 app = FastAPI(title="wanderos-media-worker", version="0.1.0")
 
@@ -729,7 +761,7 @@ def journey_cascade(req: CascadeReq):
     from app.journey.cascade import Commitment, Graph, propagate
 
     def when(v):
-        return datetime.fromisoformat(v) if v else None
+        return _iso(v)
 
     graph = Graph()
     for raw in req.commitments:
@@ -773,10 +805,12 @@ def journey_pulse(req: PulseReq):
     from app.journey import twin as T
 
     def day(v):
-        return date.fromisoformat(v) if v else None
+        # Tolerate a full timestamp: callers vary, and one odd date must not
+        # take down the whole board.
+        return date.fromisoformat(str(v)[:10]) if v else None
 
     def when(v):
-        return datetime.fromisoformat(v) if v else None
+        return _iso(v)
 
     twin = T.seed("pulse", destination=req.destination, start=day(req.start_date),
                   end=day(req.end_date), mobility=req.mobility)
@@ -820,3 +854,28 @@ def journey_pulse_protect(req: ProtectReq):
     from app.journey.pulse import protect
 
     return protect(req.board, req.node_key, action=req.action, by=req.by)
+
+
+class FlightStatusReq(BaseModel):
+    flight_iata: str
+    flight_date: str | None = None
+
+
+@app.post("/disruption/flight-status")
+def disruption_flight_status(req: FlightStatusReq):
+    """Live flight status from the real provider.
+
+    Returns `live: False` when the provider is unavailable or out of quota
+    rather than a remembered delay — a stale number produces a confident board
+    about a situation that has already changed.
+    """
+    from app.disruption.flight_status import lookup
+
+    status = lookup(req.flight_iata, flight_date=req.flight_date)
+    if status is None:
+        return {"flight_iata": req.flight_iata, "delay_minutes": 0, "live": False,
+                "note": ("No live status available — provider unavailable, out of "
+                         "quota, or no key. Not treated as 'on time'.")}
+    payload = status.as_dict() if hasattr(status, "as_dict") else dict(status.__dict__)
+    payload["live"] = True
+    return payload

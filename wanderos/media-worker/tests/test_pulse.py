@@ -130,3 +130,52 @@ class TestProtect:
     def test_protecting_an_unknown_node_changes_nothing(self):
         board = P.build(trip(**{T.FLIGHT: {"flight_iata": "BA1", "delay_minutes": 95}}))
         assert P.protect(board, "nope", action="x", by="y")["overall"] == P.RED
+
+
+class TestEveryCommitmentAppears:
+    def test_an_absorbed_commitment_still_shows_in_green(self):
+        """A booking must not vanish from the ribbon because it is SAFE. The
+        traveller cannot tell 'this is fine' from 'this was forgotten', and a
+        missing node also hides any action already taken on it."""
+        from app.journey import cascade as C
+
+        graph = (C.Graph()
+                 .add(C.Commitment("flight", "Flight BA1", "flight"))
+                 .add(C.Commitment("hotel", "Hotel check-in", "stay"))
+                 .depends("hotel", on="flight", slack_minutes=300))
+        disruption = C.propagate(graph, origin="flight", delay_minutes=20)
+        assert not disruption["at_risk"], "this delay should be absorbed"
+
+        board = P.build(trip(**{T.FLIGHT: {"flight_iata": "BA1", "delay_minutes": 20}}),
+                        graph=graph, disruption=disruption)
+        hotel = next((n for n in board["nodes"] if n["key"] == "hotel"), None)
+        assert hotel is not None, "an absorbed commitment must still appear"
+        assert hotel["state"] == P.GREEN
+
+    def test_a_safe_node_says_why_it_is_safe(self):
+        """'The delay fits inside your buffer' is the reassurance a traveller
+        is actually looking for."""
+        from app.journey import cascade as C
+
+        graph = (C.Graph()
+                 .add(C.Commitment("flight", "Flight BA1", "flight"))
+                 .add(C.Commitment("hotel", "Hotel check-in", "stay"))
+                 .depends("hotel", on="flight", slack_minutes=300))
+        board = P.build(trip(**{T.FLIGHT: {"flight_iata": "BA1", "delay_minutes": 20}}),
+                        graph=graph,
+                        disruption=C.propagate(graph, origin="flight", delay_minutes=20))
+        hotel = next(n for n in board["nodes"] if n["key"] == "hotel")
+        assert "slack" in hotel["detail"] or "fits" in hotel["detail"]
+
+    def test_a_protected_absorbed_commitment_keeps_its_purple(self):
+        from app.journey import cascade as C
+
+        graph = (C.Graph()
+                 .add(C.Commitment("flight", "Flight BA1", "flight"))
+                 .add(C.Commitment("hotel", "Hotel check-in", "stay"))
+                 .depends("hotel", on="flight", slack_minutes=300))
+        board = P.build(trip(**{T.FLIGHT: {"flight_iata": "BA1", "delay_minutes": 20}}),
+                        graph=graph,
+                        disruption=C.propagate(graph, origin="flight", delay_minutes=20))
+        board = P.protect(board, "hotel", action="late key confirmed", by="guardian")
+        assert next(n for n in board["nodes"] if n["key"] == "hotel")["state"] == P.PURPLE

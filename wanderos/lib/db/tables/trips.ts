@@ -83,6 +83,18 @@ export async function getTripForUser(tripId: string, userId: string): Promise<Tr
   return rows[0] || null;
 }
 
+/**
+ * Fetch a trip without a user check. Used by server-side board building, where
+ * ownership has already been established by the caller.
+ */
+export async function getTripById(tripId: string): Promise<TripRow | null> {
+  const rows = await queryAurora<TripRow>(
+    `select * from trips where id = $1`,
+    [tripId]
+  );
+  return rows[0] ?? null;
+}
+
 export async function updateTripProfile(tripId: string, profile: Record<string, unknown>): Promise<TripRow | null> {
   const rows = await queryAurora<TripRow>(
     `update trips
