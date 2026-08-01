@@ -617,3 +617,39 @@ def planning_true_cost(req: TrueCostReq):
     from app.planning.true_cost import Trip, estimate
 
     return estimate(Trip(**req.model_dump()))
+
+
+# ── Journey Twin — the connected view ──
+
+class TwinReq(BaseModel):
+    trip_id: str
+    destination: str = ""
+    start: str = ""
+    end: str = ""
+    travellers: int = 1
+    mobility: str = "moderate"
+    flight: dict | None = None
+
+
+@app.post("/journey/twin")
+def journey_twin(req: TwinReq):
+    """Seed a trip, run every enricher that can run, return what is known.
+
+    This is the connected view: features read the twin and write facts back,
+    never calling each other. The response says what ran, what was skipped and
+    WHY — so a caller can see exactly what the product does not yet know.
+    """
+    from datetime import date as _date
+
+    from app.journey import twin as T
+    from app.journey.enrich import run
+
+    tw = T.seed(req.trip_id, destination=req.destination,
+                start=_date.fromisoformat(req.start) if req.start else None,
+                end=_date.fromisoformat(req.end) if req.end else None,
+                travellers=req.travellers, mobility=req.mobility)
+    if req.flight:
+        tw.record(T.FLIGHT, req.flight, source="traveller", by="intake")
+
+    report = run(tw)
+    return {"report": report, "twin": tw.as_dict(), "provenance": tw.provenance()}
